@@ -57,6 +57,8 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 
 `.apy` 解析为 AST，引擎指令（`show`、`jump`、`menu` 等）走引擎自身的 dispatch；Python 块保留原始源码字符串，执行时通过 `compile()` + `exec()` 并手动传入文件名和行号偏移，使 traceback 能正确指回 `.apy` 文件位置。
 
+**作用域模型**：引擎维护一个全局 `store` dict，贯穿整个游戏生命周期。所有 Python 块的 `exec()` 调用共享同一个 `store` 作为 `globals`，变量天然跨 label、跨 jump 持久化。引擎内置符号（`show`、`jump` 等 API）通过 `__builtins__` 注入为只读层，用户代码可见但不可覆盖。
+
 ### 基础语法
 
 ```apy
@@ -77,7 +79,7 @@ eileen: "今天天气不错。"
 show eileen at left
 hide eileen
 
-# 单行 Python（仅允许单个表达式或赋值）
+# 单行 Python（单行内 Python 语法合法即可）
 $ flag_met_eileen = True
 
 # 多行 Python
@@ -105,28 +107,27 @@ menu:
 
 ### 静态与动态修饰符
 
-| 修饰符 | 含义 |
-|--------|------|
-| 无修饰符 | 默认行为（`define` 默认静态，`label` 默认动态） |
-| `sta` | 显式声明为静态，表达作者意图 |
-| `dyn` | 显式声明为动态运行时 |
+| 修饰符 | 适用对象 | 含义 |
+|--------|----------|------|
+| 无修饰符 | 全部 | 默认行为（`define` 默认静态，`label` 默认动态） |
+| `sta` | `label` | 强制声明为静态，表达作者意图 |
+| `dyn` | `define`、`label` | 显式声明为动态，运行时求值 |
 
 ```apy
-define eileen:        # 静态（默认）
-sta define eileen:    # 显式静态，等价于上面，用于表达意图
+define eileen:        # 静态（默认，无需标记）
 dyn define eileen:    # 动态，运行时求值
 
-label morning_scene:  # 动态（默认）
-sta label morning:    # 强制静态 label
+label morning_scene:      # 动态（默认）
+sta label morning_scene:  # 强制静态，非默认行为，显式标记
 ```
 
-`sta` 的主要价值在于代码审查时可见性——让读者一眼看出这是有意为之，而不是遗漏了 `dyn`。
+`sta` 仅在 `label` 上有意义——`label` 默认动态，加 `sta` 表示这是有意为之的静态声明，代码审查时一眼可见。`define` 本身默认静态，`sta define` 无额外语义，不支持此写法。
 
 ### 关键设计决策
 
 **表情控制**：表情只能通过对话行的修饰符 `(expression)` 设置，`show` 指令仅控制位置和可见性，不影响表情状态。避免 Ren'Py 中立绘状态残留的问题。
 
-**Python 块边界**：`$` 后只允许单个表达式或赋值，不允许复合语句（如 `$ if x: y = 1` 非法）。复合逻辑必须使用 `python:` 块。
+**Python 块边界**：`$` 后允许任何在单行内 Python 语法合法的内容，包括三元表达式、多重赋值等（如 `$ x = 1 if flag else 2`、`$ a, b = b, a`）。需要换行的复合逻辑使用 `python:` 块，换行符即边界，无需记额外规则。
 
 **角色定义**：内联在 `.apy` 文件中，不使用外部 JSON。支持 `dyn define` 实现运行时动态定义。
 
@@ -155,10 +156,17 @@ sta label morning:    # 强制静态 label
 GUI 编辑和代码编辑之间的**双向同步**是核心设计约束：
 
 - GUI 操作 → 生成 `.apy` 代码，风格一致、可读
-- 代码编辑 → 反向解析回 GUI 状态，超出 GUI 表达能力的部分降级为代码块
+- 代码编辑 → 反向解析回 GUI 状态，超出 GUI 表达能力的部分保留为代码节点
 - 两者来回切换时，不丢失任何信息
 
-`.apy` 格式的设计从一开始就考虑可往返解析性——GUI 可表达的部分有明确的代码对应，超出部分有明确的降级边界。
+**Round-Trip 边界**由语言层级天然划定：
+
+| 层级 | 内容 | GUI 处理方式 |
+|------|------|-------------|
+| 引擎指令层 | `show`、`hide`、`jump`、`menu`、对话行、`define` 等 | 完全解析，转换为对应积木块或蓝图节点 |
+| Python 代码层 | `$` 单行和 `python:` 块 | 整块作为不透明代码节点，直接在节点上编辑原始代码，不转换为其他形式 |
+
+编辑器不尝试解析 Python 内部结构，两种 Python 形式在编辑器中的呈现方式相同，差异仅在体积。
 
 ---
 
