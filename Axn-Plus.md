@@ -193,6 +193,195 @@ call morning_scene("happy") as result
 return
 ```
 
+### 扩展语法
+
+#### 叙事表达
+
+**对话插值**
+
+对话字符串内用 `{expr}` 插入 `store` 变量或简单表达式，引擎在渲染时求值：
+
+```apy
+eileen: "你好，{player_name}。今天是第 {day} 天。"
+eileen: "好感度：{relationship['eileen']}/100"
+```
+
+插值表达式限制为单一表达式（变量、属性访问、下标、简单运算）。禁止函数调用和赋值——需要复杂计算时先用 `$` 块算好再引用。推断失败时抛出 `AxnInterpolationError`，指明文件位置和表达式内容。
+
+**条件文本（inline conditional）**
+
+```apy
+eileen: "我们[已经|还没]见过面。" (if=flag_met)
+```
+
+`[A|B]` 语法：`if` 条件为真取 A，否则取 B。省略 B 时条件为假则显示空字符串：
+
+```apy
+eileen: "你[（有点憔悴）]看起来不错。" (if=flag_tired)
+```
+
+`[A|B]` 仅支持静态字符串片段，不支持嵌套。需要复杂条件分支时用 `if` 块。
+
+**多语言（translate）**
+
+```apy
+translate zh:
+    eileen: "你好。"
+    @ "阳光透过窗户照进来。"
+
+translate en:
+    eileen: "Hello."
+    @ "Sunlight streams through the window."
+```
+
+`translate` 块内只允许对话行和旁白，不允许引擎指令或 Python 块。引擎根据运行时语言设置选择对应块；当前语言无对应翻译时回退到第一个 `translate` 块并输出警告。同一 label 内的 `translate` 块必须紧跟原始对话行之后，解析器在启动时检查完整性。
+
+---
+
+#### 动画与演出控制
+
+**具名动画序列（animation block）**
+
+```apy
+animation eileen_enter:
+    show eileen right 0.0
+    camera move 1.1 0.5
+    wait 0.3
+    show eileen center 0.4 (enter=slidein)
+
+animation eileen_exit:
+    hide eileen 0.4 (exit=slideout)
+    camera reset 0.3
+```
+
+调用方式与 `call` 一致：
+
+```apy
+call animation eileen_enter
+call animation eileen_enter as anim   # 用 as 接句柄，配合 wait for 使用
+```
+
+`animation` 块内只允许引擎指令（`show`、`hide`、`camera`、`play`、`wait` 等），不允许 Python 块、对话行、`jump`、`menu`。目的是保证 GUI 能完整解析，也防止演出片段携带业务逻辑。
+
+**并行轨道（parallel / track）**
+
+```apy
+parallel:
+    track a:
+        show eileen left 0.5
+        wait 0.5
+        eileen: "……"
+    track b:
+        play music "bgm/tense.ogg" 0.8 1.0
+        camera shake 5 0.3
+```
+
+`parallel` 块内的所有 `track` 并行执行，默认等所有 `track` 完成后推进（等价于 `wait for all`）。需要提前推进时：
+
+```apy
+parallel (wait=any):
+    track a:
+        ...
+    track b:
+        ...
+```
+
+`track` 可命名后用 `wait for` 精细控制：
+
+```apy
+parallel (wait=none):           # 不自动等待，手动控制
+    track bgm:
+        play music "bgm/tense.ogg" 0.8 1.0
+    track scene as anim_scene:
+        show eileen left 0.5
+        camera shake 5 0.3
+
+wait for anim_scene             # 等 scene track 完成后推进
+```
+
+`parallel` 块在 GUI 脚本区中表现为时间轴视图，每个 `track` 对应一条轨道。
+
+---
+
+#### 数据与逻辑
+
+**`with store` 块（批量状态变更）**
+
+```apy
+with store:
+    flag_met_eileen = True
+    day += 1
+    relationship["eileen"] += 5
+```
+
+语义上等价于连续写多行 `$`，但意图更清晰——这是一组原子性的状态变更。块内只允许赋值语句，不允许流程控制（`if`、`for`、函数调用等）；违反时抛出解析错误。
+
+**`const` 声明**
+
+```apy
+const MAX_RELATIONSHIP = 100
+const ROUTES = ["a", "b", "c"]
+```
+
+引擎启动时静态求值，写入只读层（与内置符号同层），用户代码不可覆盖。右值必须是字面量或字面量组合，不允许引用 `store` 变量或调用函数。尝试在运行时覆盖 `const` 时抛出 `AxnConstError`。
+
+---
+
+#### 模块化与复用
+
+**`template` / `extends`（UI 组件继承）**
+
+适用于窗口区的 UI 控件定义，在 `.apy` 文件中声明：
+
+```apy
+# ui/base.apy
+template BaseBox:
+    background "ui/box_default.png"
+    font "fonts/default.ttf"
+    padding (20, 10)
+    text_color #ffffff
+```
+
+```apy
+# ui/eileen_box.apy
+import "ui/base.apy"
+
+EileenBox extends BaseBox:
+    background "ui/box_eileen.png"
+    name_color #ff8800
+    font "fonts/handwriting.ttf"
+```
+
+`extends` 只继承属性，不支持方法覆盖（UI 控件不是 Python 类）。属性冲突时子类覆盖父类，无歧义。跨文件引用 `template` 需要显式 `import`，使依赖关系可见。
+
+**`include`（脚本片段静态包含）**
+
+```apy
+include "common/prologue.apy"
+```
+
+编译期展开，等价于将目标文件内容内联到当前位置。与 `jump`/`call` 的区别：`include` 是编译期合并，不产生运行时跳转，也不创建独立的执行上下文。
+
+适用场景：跨章节复用的开场白、结局模板、通用菜单片段等。引擎启动时检测循环 `include`，发现时抛出错误并打印完整引用链。
+
+---
+
+#### Round-Trip Fidelity 补充
+
+扩展语法对 Round-Trip 边界的影响：
+
+| 新增语法 | GUI 处理方式 |
+|----------|-------------|
+| `{expr}` 插值 | 对话积木块内内联编辑，表达式作为文本字段 |
+| `[A\|B]` 条件文本 | 对话积木块内内联编辑，A/B 作为独立字段 |
+| `translate` 块 | 对话积木块的多语言标签页 |
+| `animation` block | 脚本区独立节点，内容可完整解析为子积木序列 |
+| `parallel / track` | 脚本区时间轴视图 |
+| `with store` 块 | 脚本区代码节点（与 `python:` 块同等处理） |
+| `const` | 脚本区只读常量节点 |
+| `template / extends` | 窗口区组件继承树 |
+| `include` | 文本区引用积木块，展开内容不在当前文件编辑 |
+
 ### 静态与动态修饰符
 
 | 修饰符 | 适用对象 | 含义 |
@@ -234,6 +423,9 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 | `camera move` | zoom → duration → angle | `offset` `easing` |
 | `camera shake` | intensity → duration | `frequency` |
 | `camera reset` | duration | — |
+| `call animation` | 名称 | — |
+| `parallel` | — | `wait` |
+| `include` | 路径 | — |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound`）。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。
 
@@ -293,10 +485,10 @@ GUI 编辑和代码编辑之间的**双向同步**是核心设计约束：
 
 | 层级 | 内容 | GUI 处理方式 |
 |------|------|-------------|
-| 引擎指令层 | `show`、`hide`、`jump`、`menu`、对话行、`define` 等 | 完全解析，转换为对应积木块或蓝图节点 |
-| Python 代码层 | `$` 单行和 `python:` 块 | 整块作为不透明代码节点，直接在节点上编辑原始代码，不转换为其他形式 |
+| 引擎指令层 | `show`、`hide`、`jump`、`menu`、对话行、`define`、`animation`、`parallel`、`translate`、`const`、`include` 等 | 完全解析，转换为对应积木块或蓝图节点 |
+| Python 代码层 | `$` 单行、`python:` 块、`with store` 块 | 整块作为不透明代码节点，直接在节点上编辑原始代码，不转换为其他形式 |
 
-编辑器不尝试解析 Python 内部结构，两种 Python 形式在编辑器中的呈现方式相同，差异仅在体积。
+编辑器不尝试解析 Python 内部结构，两种 Python 形式在编辑器中的呈现方式相同，差异仅在体积。`with store` 块虽然语法受限，但同样作为代码节点处理，不转换为积木块序列。
 
 ---
 
