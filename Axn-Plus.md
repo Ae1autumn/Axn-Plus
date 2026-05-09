@@ -81,6 +81,10 @@ define char eileen:   # 显式声明，等价于上方写法，意图更清晰
 eileen: "你好。" (happy)
 eileen: "今天天气不错。" (speed=0.5, voice="vo/001.ogg", nowait)
 
+# voice 短路径：相对 voice_prefix 的短路径，引擎自动补全扩展名
+# 等价于 voice="vo/eileen/001.ogg"（假设 voice_prefix = "vo/eileen/"）
+eileen: "你好。" (voice="001")
+
 # 旁白
 @ "阳光透过窗户照进来。"
 
@@ -163,11 +167,32 @@ label morning_scene(mood, weather="sunny"):
     eileen: "早上好。"
     return mood + "_done"   # return 后跟任意 Python 表达式
 
-# 条件
+# 条件（支持 elif 链）
 if flag_met_eileen:
     eileen: "好久不见。"
+elif flag_heard_of_eileen:
+    eileen: "久仰大名。"
 else:
     eileen: "初次见面。"
+
+# unless：if not 的语法糖，用于卫语句场景
+unless flag_met_eileen:
+    jump prologue
+
+# match：多路路由，匹配 store 变量的单一值
+# 简单形式（GUI 可完整解析为多路分支节点）
+match day:
+    1       -> day1_scene
+    2       -> day2_scene
+    3, 4    -> midgame_scene
+    _       -> ending
+
+# match 复杂形式（含表达式或 guard，整块降级为代码节点）
+match relationship["eileen"]:
+    case _ if _ >= 80:
+        jump route_good
+    case _:
+        jump route_bad
 
 # 菜单
 menu (timeout=10.0, default="拒绝"):
@@ -180,6 +205,28 @@ menu (timeout=10.0, default="拒绝"):
         jump route_c
     "隐藏选项" (hidden=flag_secret):
         jump route_secret
+
+# menu 内联跳转：选项只有一条 jump 时可用 -> 省略展开块
+menu:
+    "答应她" (if=flag_can_agree) -> route_a
+    "拒绝"                       -> route_b
+    "询问详情" (if=flag_met_eileen):   # 有额外逻辑时退回展开块
+        $ log_choice("ask")
+        jump route_c
+
+# with char：连续对话锁定角色和默认修饰符
+# 块内裸字符串自动归属当前角色；行级修饰符完全覆盖块级默认值（不做合并）
+with eileen (happy):
+    "第一句。"
+    "第二句。"
+    "第三句。" (sad)          # 覆盖表情
+    "第四句。" (speed=0.5)    # 只覆盖具名参数，表情继承 happy
+
+# narrate：连续旁白块，替代重复的 @
+narrate:
+    "第一段。"
+    "第二段。"
+    "第三段。" (speed=0.5)
 
 # 跳转与调用
 jump route_a
@@ -542,6 +589,98 @@ const ROUTES = ["a", "b", "c"]
 
 引擎启动时静态求值，写入只读层（与内置符号同层），用户代码不可覆盖。右值必须是字面量或字面量组合，不允许引用 `store` 变量或调用函数。尝试在运行时覆盖 `const` 时抛出 `AxnConstError`。
 
+**`flag` 声明块**
+
+集中声明游戏状态变量，使引擎可在启动时建立完整变量列表，并自动纳入存档管理：
+
+```apy
+flag:
+    met_eileen = False
+    agreed = False
+    can_refuse = True
+```
+
+`flag` 块只允许出现在文件顶层，不允许嵌套在 `label` 或其他块内。右值必须是字面量（`bool`、`int`、`str`、`None`），不允许表达式。引擎启动时静态扫描所有 `flag` 块，生成全局变量注册表；引用了未声明变量时，引擎输出警告但不阻止运行（兼容直接用 `$` 赋值的工作流）。
+
+`flag` 块声明的变量直接写入 `store`，访问方式与普通 `store` 变量完全一致，无命名空间前缀。
+
+**`set` 指令（GUI 友好写法）**
+
+专门用于修改 `flag` 块声明的变量，使 GUI 能建立声明与赋值之间的归属关系：
+
+```apy
+set met_eileen = True
+set agreed = False
+set can_refuse = some_func()    # 右值复杂时，GUI 降级为代码节点，但归属关系保留
+```
+
+`set` 是推荐写法，不强制要求。`$` 永远可用作退路，两者语义等价：
+
+| | `set` | `$` |
+|---|---|---|
+| 作用对象 | 只能修改 `flag` 声明的变量，修改未声明变量时引擎输出警告 | 任意 Python 赋值 |
+| GUI 处理 | 专用积木块，显示变量名 + 值；右值复杂时降级代码节点 | 代码节点 |
+| 静态分析 | 引擎启动时检查变量是否已在 `flag` 块声明 | 不检查 |
+
+**`checkpoint` 存档点**
+
+在脚本中显式标记存档点，触发自动存档并在存档列表中生成可回溯节点：
+
+```apy
+label chapter2_start:
+    checkpoint "第二章·清晨"
+    scene bg_morning
+    eileen: "新的一天。"
+```
+
+支持具名参数扩展：
+
+```apy
+checkpoint "第二章" (thumbnail=current, bgm_preview="bgm/morning.ogg")
+```
+
+GUI 脚本区对应存档点积木块，章节结构一眼可见。
+
+**`assert` 调试断言**
+
+开发期用于验证游戏状态，发行版自动剥离：
+
+```apy
+assert flag_met_eileen, "进入此路由前必须已见过 eileen"
+assert relationship["eileen"] >= 0, f"好感度不能为负：{relationship['eileen']}"
+```
+
+语义与 Python `assert` 完全一致。引擎在 debug 模式下执行，release 模式跳过，不产生任何运行时开销。
+
+---
+
+#### 事件钩子
+
+**`on` 块**
+
+用于响应引擎事件，只允许定义在文件顶层，不允许出现在 `label` 或任何其他块内。GUI 在独立的"事件钩子"面板中展示，与脚本流程图完全分离，不影响节点连线。
+
+```apy
+# 进入指定 label 时触发
+on enter morning_scene:
+    play music "bgm/morning.ogg" 0.8 1.0
+
+# 全局按键绑定
+on key "escape":
+    jump pause_menu
+```
+
+块内允许引擎指令和 Python 块，Python 块按常规规则降级为代码节点。
+
+支持的事件类型：
+
+| 事件 | 语法 | 触发时机 |
+|------|------|---------|
+| label 进入 | `on enter <label>` | 执行流进入指定 label 的第一行之前 |
+| 按键 | `on key "<key>"` | 玩家按下对应键时 |
+
+`on change`（响应式变量监听）因实现成本高，暂不支持，后续考虑。
+
 ---
 
 #### 模块化与复用
@@ -603,6 +742,18 @@ include "common/prologue.apy"
 | `transition`（内置） | 参数选择器，下拉列表 |
 | `transition`（自定义 Python 类） | 脚本区代码节点 |
 | `states` 声明 | 角色定义积木块内的状态表编辑器 |
+| `elif` / `unless` | 条件积木块的分支节点，与 `if` / `else` 同等处理 |
+| `match`（简单形式） | 脚本区多路分支节点，值 → label 完整可解析 |
+| `match`（复杂形式，含表达式或 guard） | 整块降级为代码节点 |
+| `menu ->` 内联跳转 | 选项积木块内联跳转字段，与展开块形式同等处理 |
+| `with char` 块 | 文本区"角色段落"积木块，折叠展示 |
+| `narrate` 块 | 文本区旁白段落积木块 |
+| `voice` 短路径 | 对话积木块内 voice 字段，显示短路径，存储时保留短路径形式 |
+| `flag` 声明块 | 脚本区变量注册表面板，完整可解析 |
+| `set` 指令 | 专用积木块，显示变量名 + 值；右值复杂时降级代码节点，归属关系保留 |
+| `checkpoint` | 脚本区存档点积木块 |
+| `assert` | 脚本区断言积木块，显示条件 + 消息；release 模式下标记为灰色（已剥离） |
+| `on enter / on key` | 编辑器独立事件钩子面板，与流程图分离展示 |
 
 ### 静态与动态修饰符
 
@@ -648,7 +799,11 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 | `call animation` | 名称 | — |
 | `parallel` | — | `wait` |
 | `include` | 路径 | — |
-| `show` | 角色 → 位置 → duration | `enter` `layer` `transform` `compose` |
+| `checkpoint` | 显示名 | `thumbnail` `bgm_preview` |
+| `assert` | 条件表达式 → 消息字符串 | — |
+| `set` | 变量名 = 值 | — |
+| `on enter` | label 名 | — |
+| `on key` | 键名字符串 | — |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound`）。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。
 
@@ -691,6 +846,28 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 **keyframe 折叠规则**：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致，解析器无歧义。
 
 **transition 扩展**：内置过渡由引擎标准库提供，自定义过渡继承 `Transition` 抽象类，通过 `apply(surface, progress)` 接口实现，直接传实例到具名参数，不引入新语法。
+
+**`elif` / `unless`**：`elif` 补全条件链，语义与 Python 完全一致。`unless` 是 `if not` 的语法糖，仅用于卫语句场景（块内通常只有一条 `jump` 或 `return`），不支持 `unless ... elif ...` 链式写法，避免语义混乱。
+
+**`match` 简单形式与复杂形式**：`match <store变量>:` + `值 -> label` 为简单形式，GUI 完整解析为多路分支节点。含表达式或 guard 的复杂形式整块降级为代码节点，不做部分解析，规则明确无歧义。
+
+**`menu ->` 内联跳转**：选项只有一条 `jump` 时用 `->` 省略展开块；有额外逻辑时退回展开块写法。同一 `menu` 内两种形式可混用，不要求统一。
+
+**`with char` 块**：块内裸字符串自动归属当前角色，修饰符继承块级声明。行级修饰符**完全覆盖**块级默认值，不做合并——规则简单，避免继承歧义。适合连续独白场景，不适合多角色交叉对话。
+
+**`narrate` 块**：连续旁白的语法糖，替代重复的 `@`。块内裸字符串全部作为旁白处理，支持修饰符。GUI 对应旁白段落积木块。
+
+**`voice` 短路径**：对话修饰符中 `voice="001"` 自动展开为 `voice_prefix + "001" + 默认扩展名`（由 `define` 中的 `voice_prefix` 和可选的 `voice_ext` 字段决定）。完整路径写法永远有效，短路径是语法糖。推断失败时抛出 `AxnVoiceError`，不静默回退。
+
+**`flag` 声明块**：只允许顶层声明，右值只允许字面量。引用未声明变量时输出警告不报错，保持与 `$` 工作流的兼容性。`flag` 声明的变量直接写入 `store`，无命名空间前缀，访问方式与普通变量完全一致。
+
+**`set` 指令**：推荐写法，不强制。`$` 永远可用。`set` 修改未在 `flag` 块声明的变量时，引擎输出警告（与引用未声明变量一致）。`set` 的存在价值是让 GUI 能追踪变量归属，`$` 的存在价值是不限制 Python 能力，两者定位不重叠。
+
+**`checkpoint`**：引擎指令层语法，GUI 完整解析为存档点积木块。`thumbnail=current` 表示截取当前帧作为存档缩略图，为引擎保留关键字，不暴露为 Python 值。
+
+**`assert`**：语义与 Python `assert` 完全一致，引擎在编译期识别并在 release 模式下剥离。右值允许任意 Python 表达式，消息部分允许 f-string。GUI 以灰色标记表示"此节点在 release 下不存在"。
+
+**`on` 块作用域**：强制顶层定义，不允许出现在 `label` 或任何块内。GUI 在独立事件钩子面板中展示，与脚本流程图完全分离。块内 Python 代码按常规规则降级为代码节点。`on change` 暂不支持，响应式语义对 `store` 代理的实现成本与 GUI 追踪复杂度不值得现阶段引入。
 
 ---
 
