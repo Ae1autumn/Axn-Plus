@@ -359,9 +359,14 @@ show eileen center (enter=SlideFromTop(0.3))   # 直接传实例
 
 `transform` 描述单个显示对象的属性随时间的变化，作用域是对象本身，不涉及演出流程。对标 Ren'Py ATL，但不引入独立子语言——`transform` 块使用有限的引擎关键字，复杂逻辑退到 Python。
 
+**时间单位：绝对秒数**
+
+keyframe 时间值为绝对秒数。`transform` 块内可声明 `duration` 作为默认总时长，apply 时可覆盖；省略 `duration` 时引擎取最后一个 keyframe 的时间值作为总时长。覆盖时引擎等比缩放所有 keyframe 时间点，相对节奏不变。
+
 ```apy
 # 定义可复用 transform
 transform shake_x:
+    duration 0.4                     # 可选，省略时取最后 keyframe 时间
     keyframe 0.0: x_offset 0        # 单属性：折叠到同行
     keyframe 0.1: x_offset -10
     keyframe 0.2: x_offset 10
@@ -375,36 +380,60 @@ transform complex_enter:
         alpha 0.0
         y_offset -30
         scale 0.9
-    keyframe 0.5:
+    keyframe 0.5 (easing=ease_out): # 逐段 easing，优先级高于全局声明
         alpha 0.8
         y_offset -5
         scale 1.02
-    keyframe 1.0:
+    keyframe 1.0 (easing=bounce):
         alpha 1.0
         y_offset 0
         scale 1.0
-    easing ease_out
     repeat 1
 
 transform breathe:
-    keyframe 0.0:  scale_y 1.0
-    keyframe 0.5:  scale_y 1.03
-    keyframe 1.0:  scale_y 1.0
+    keyframe 0.0: scale_y 1.0
+    keyframe 1.0: scale_y 1.03
     easing ease_in_out
-    repeat forever                  # 持续循环
+    repeat forever pingpong          # 正反交替循环，无需手写对称 keyframe
 ```
 
 keyframe 折叠规则：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致。
+
+**`repeat` 语法：**
+
+```apy
+repeat 1                  # 播放一次
+repeat forever            # 无限循环（正向）
+repeat forever pingpong   # 无限循环，正反交替
+repeat 3 pingpong         # 播放 3 次，正反交替（奇数次正向，偶数次反向）
+```
+
+`repeat N pingpong` 中 N 指完整循环次数，不是单程次数。
+
+**逐段 easing：**
+
+`easing` 支持全局声明和逐 keyframe 声明，逐段优先级高于全局；全局未声明时默认 `linear`。
+
+```apy
+transform slide_in:
+    keyframe 0.0: y_offset -50
+    keyframe 0.6 (easing=ease_out): y_offset -5    # 这一段 ease_out
+    keyframe 1.0 (easing=bounce):   y_offset 0     # 这一段 bounce
+    repeat 1
+```
 
 **transform 可用属性：**
 
 | 属性 | 含义 |
 |------|------|
-| `x_offset` / `y_offset` | 位移偏移（像素） |
+| `x_offset` / `y_offset` | 位移偏移（像素，相对初始位置） |
+| `x` / `y` | 绝对位置（像素，相对锚点）；与 `x_offset` / `y_offset` 共存时取加法合成 |
 | `scale` / `scale_x` / `scale_y` | 缩放比例 |
 | `rotate` | 旋转角度 |
 | `alpha` | 透明度（0.0–1.0） |
 | `color_multiply` | 颜色乘算（闪红、变灰等），接受 `(r, g, b, a)` |
+| `blur` | 高斯模糊半径（像素） |
+| `anchor_x` / `anchor_y` | 锚点（0.0–1.0），影响旋转和缩放中心 |
 
 `easing` 支持内置缓动名或 Python callable：
 
@@ -421,11 +450,38 @@ transform custom_ease:
 **应用 transform：**
 
 ```apy
-show eileen center (transform=shake_x)              # 单个
-show eileen center (transform=[breathe, shake_x])   # 多个叠加，按列表顺序合成
+show eileen center (transform=shake_x)                              # 单个
+show eileen center (transform=[breathe, shake_x])                   # 多个并行叠加
+show eileen center (transform=[enter_scale, hover_scale], compose=sequence)  # 串行
+show eileen center (transform=shake_x(duration=0.2))               # 覆盖 duration
 ```
 
-transform 叠加时属性冲突（两个 transform 同时修改 `x_offset`）取最后一个，不做混合，引擎启动时对已知冲突输出警告。
+**叠加模型（`compose`）：**
+
+| `compose` 值 | 行为 |
+|---|---|
+| `parallel`（默认） | 所有 transform 同时运行，属性冲突取列表最后一个，引擎启动时对已知冲突输出警告 |
+| `sequence` | 串行，前一个 `repeat 1` 完成后启动下一个；遇到 `repeat forever` 则阻塞在此，之后的 transform 永远不会执行，引擎启动时输出警告 |
+
+**触发与停止模型：**
+
+新的 `show eileen (transform=X)` 替换当前所有 transform，不叠加。需要追加时使用 `transform+=`：
+
+```apy
+show eileen (transform=breathe)       # 启动 breathe
+show eileen (transform=shake_x)       # 停止 breathe，启动 shake_x
+show eileen (transform+=shake_x)      # 在现有基础上追加 shake_x
+show eileen (transform=none)          # 显式停止所有 transform
+```
+
+| 事件 | 行为 |
+|---|---|
+| `hide eileen` | 立即停止所有附属 transform |
+| `show eileen`（无 transform 参数） | 保留当前 transform，不中断（移动位置不打断循环动画） |
+| `show eileen (transform=X)` | 替换全部 transform |
+| `show eileen (transform+=X)` | 追加，保留现有 transform |
+| `show eileen (transform=none)` | 显式停止所有 transform |
+| `repeat 1` 动画自然结束 | 停止该 transform，不影响其他 |
 
 **复杂动画退到 Python：**
 
@@ -541,7 +597,8 @@ include "common/prologue.apy"
 | `with store` 块 | 脚本区代码节点（与 `python:` 块同等处理） |
 | `const` | 脚本区只读常量节点 |
 | `template / extends` | 窗口区组件继承树 |
-| `transform` block | 脚本区 keyframe 时间轴编辑器，属性列表完整可解析 |
+| `transform` block | 脚本区 keyframe 时间轴编辑器，属性列表完整可解析；`compose`、`repeat pingpong`、逐段 easing 均可解析 |
+| `transform+=` | 脚本区追加节点，与 `transform=` 节点同类 |
 | `AnimatedSprite` Python 类 | 脚本区代码节点（与 `python:` 块同等处理） |
 | `transition`（内置） | 参数选择器，下拉列表 |
 | `transition`（自定义 Python 类） | 脚本区代码节点 |
@@ -579,7 +636,7 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 
 | 指令 | 位置参数顺序 | 保留具名参数 |
 |------|------------|------------|
-| `show` | 角色 → 位置 → duration | `enter` `layer` |
+| `show` | 角色 → 位置 → duration | `enter` `layer` `transform` `compose` |
 | `hide` | 角色 → duration | `exit` |
 | `scene` | 路径 → duration | `with` |
 | `clear` | — | `with` |
@@ -591,7 +648,7 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 | `call animation` | 名称 | — |
 | `parallel` | — | `wait` |
 | `include` | 路径 | — |
-| `show`（带 transform） | 角色 → 位置 → duration | `enter` `layer` `transform` |
+| `show` | 角色 → 位置 → duration | `enter` `layer` `transform` `compose` |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound`）。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。
 
@@ -621,7 +678,15 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 
 **transform 与 animation 边界**：`transform` 描述单个对象的属性动画（keyframe 数据），`animation` 描述演出流程（指令序列）。两者职责不重叠，通过 `(transform=...)` 参数组合使用。`transform` 块内只允许有限的引擎关键字，不允许 Python，保证 GUI 可完整解析；超出表达能力的场景通过继承 `AnimatedSprite` 退到 Python。
 
-**transform 叠加冲突**：多个 transform 同时修改同一属性时，取列表中最后一个，不做混合。引擎启动时对已知冲突输出警告，不静默。
+**transform 时间单位**：keyframe 时间值为绝对秒数，与 `show`/`hide` 的 duration 单位一致。`duration` 参数可覆盖总时长，引擎等比缩放所有 keyframe 时间点，相对节奏不变。省略 `duration` 时取最后一个 keyframe 的时间值。
+
+**transform repeat**：`repeat 1` / `repeat forever` / `repeat forever pingpong` / `repeat N pingpong`。`pingpong` 下奇数次正向、偶数次反向，N 指完整循环次数，不是单程次数。
+
+**transform easing**：支持全局声明和逐 keyframe 声明（`keyframe T (easing=X):`），逐段优先级高于全局，全局未声明时默认 `linear`。
+
+**transform 叠加冲突**：`compose=parallel`（默认）时属性冲突取列表最后一个，不做混合，引擎启动时输出警告。`compose=sequence` 时串行执行，`repeat forever` 之后的 transform 永远不会执行，引擎启动时输出警告。
+
+**transform 触发与停止**：`show eileen (transform=X)` 替换全部现有 transform；`show eileen` 无 transform 参数时保留当前 transform（移动位置不打断循环动画）；`transform+=X` 追加；`transform=none` 显式停止所有；`hide` 时自动停止所有附属 transform。
 
 **keyframe 折叠规则**：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致，解析器无歧义。
 
