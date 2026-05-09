@@ -63,6 +63,7 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 
 ```apy
 # 角色定义（静态声明，内联）
+# define 默认推断类型为 char；显式声明可用 define char
 define eileen:
     name "Eileen"
     color #ff8800
@@ -74,6 +75,8 @@ define eileen:
     type_sound "sfx/type_eileen.ogg"
     dialogue_box "ui/eileen_box.apy::EileenBox"
 
+define char eileen:   # 显式声明，等价于上方写法，意图更清晰
+
 # 角色对话，表情作为行内修饰符；括号内支持裸关键字（布尔 flag）和具名参数
 eileen: "你好。" (happy)
 eileen: "今天天气不错。" (speed=0.5, voice="vo/001.ogg", nowait)
@@ -82,12 +85,20 @@ eileen: "今天天气不错。" (speed=0.5, voice="vo/001.ogg", nowait)
 @ "阳光透过窗户照进来。"
 
 # 位置与可见性（show 不控制表情）
-# 单个角色
-show eileen at left (enter=slidein_left, duration=0.3)
-hide eileen (exit=fadeout, duration=0.5)
+# 指令结构：动词 [子命令] [位置参数...] (具名参数...)
+# show 位置参数顺序：角色 → 位置 → duration
+show eileen left                                        # 最简写法
+show eileen left 0.3                                    # 指定 duration
+show eileen left 0.3 (enter=slidein_left)               # 补全具名参数
+show eileen (layer=effect)                              # 显式指定层，默认为 sprite 层
+
+# hide 位置参数顺序：角色 → duration
+hide eileen                                             # 立即隐藏
+hide eileen 0.5                                         # 指定 duration
+hide eileen 0.5 (exit=fadeout)                          # 补全具名参数
 
 # 多角色并行：同行逗号分隔 = 并行执行，换行 = 串行执行
-show eileen at left (enter=slidein, duration=0.3) as anim_eileen, sophia at right (enter=slideout, duration=1.0) as anim_sophia
+show eileen left 0.3 (enter=slidein) as anim_eileen, sophia right 1.0 (enter=slideout) as anim_sophia
 
 # 等待控制
 wait                    # 等用户点击
@@ -97,19 +108,44 @@ wait for all            # 等所有动画完成（默认行为，显式写出意
 wait for any            # 等最先完成的动画
 
 # 场景切换（不隐式清空立绘）
-scene bg_room (with=fade, duration=0.5)
-scene bg_room (clear=True, with=fade, duration=0.5)  # 显式清空立绘
+# scene 位置参数顺序：路径 → duration
+scene bg_room                           # 切换背景
+scene bg_room 0.5                       # 指定 duration
+scene bg_room 0.5 (with=fade)           # 补全具名参数
 
-# 清空所有立绘
-clear (with=fade)
+# 清空所有立绘（scene 不负责清空，需显式使用 clear）
+clear                   # 立即清空
+clear (with=fade)       # 带过渡
 
-# 镜头控制
-camera (zoom=1.2, pan=left, duration=0.5)
+# 镜头控制（子命令结构）
+# camera move 位置参数顺序：zoom → duration → angle
+camera move                             # 无变化（通常配合具名参数使用）
+camera move 1.2                         # 指定 zoom
+camera move 1.2 0.5                     # zoom + duration
+camera move 1.2 0.5 15.0               # zoom + duration + angle
+camera move 1.2 0.5 (offset=(100, 0))  # 补全具名参数
 
-# 音频
-play music "bgm/morning.ogg" (fadein=1.0, loop, volume=0.8)
-play sound "sfx/door.ogg" (volume=0.6)
-stop music (fadeout=1.0)
+# camera shake 位置参数顺序：intensity → duration
+camera shake                            # 默认强度和时长
+camera shake 10                         # 指定 intensity
+camera shake 10 0.5                     # intensity + duration
+camera shake 10 0.5 (frequency=30)      # 补全具名参数
+
+# camera reset
+camera reset                            # 立即重置
+camera reset 0.5                        # 指定 duration
+
+# 音频（子命令结构）
+# play 位置参数顺序：路径 → volume → fadein → fadeout
+play music "bgm/morning.ogg"                            # 全默认
+play music "bgm/morning.ogg" 0.8                        # 指定 volume
+play music "bgm/morning.ogg" 0.8 1.0                    # volume + fadein
+play music "bgm/morning.ogg" 0.8 1.0 1.0 (loop)        # 补全具名参数
+play sound "sfx/door.ogg" 0.6
+
+# stop 位置参数顺序：fadeout
+stop music                              # 立即停止
+stop music 1.0                          # 指定 fadeout
 
 # 单行 Python（单行内 Python 语法合法即可）
 $ flag_met_eileen = True
@@ -119,14 +155,13 @@ python:
     for item in inventory:
         item.apply()
 
-# 标签（默认动态）
+# 标签（默认动态）；label 签名直接使用 Python 函数签名风格
 label morning_scene:
     eileen: "早上好。" (smile)
 
-# 带参数的标签
-label morning_scene(mood, weather):
+label morning_scene(mood, weather="sunny"):
     eileen: "早上好。"
-    return result_value
+    return mood + "_done"   # return 后跟任意 Python 表达式
 
 # 条件
 if flag_met_eileen:
@@ -150,14 +185,10 @@ menu (timeout=10.0, default="拒绝"):
 jump route_a
 
 # call 不接返回值
-call morning_scene(mood="happy")
+call morning_scene("happy")
 
-# call 用 as 接返回值
-call morning_scene(mood="happy") as result
-
-# call 用 _return 接返回值（等价写法）
-call morning_scene(mood="happy")
-$ result = _return
+# call 用 as 接返回值（推荐写法）
+call morning_scene("happy") as result
 
 return
 ```
@@ -180,25 +211,55 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 
 `sta` 仅在 `label` 上有意义——`label` 默认动态，加 `sta` 表示这是有意为之的静态声明，代码审查时一眼可见。`define` 本身默认静态，`sta define` 无额外语义，不支持此写法。
 
+### 指令结构
+
+所有指令遵循统一结构：
+
+```
+动词 [子命令] [位置参数...] (具名参数...)
+```
+
+**位置参数**按固定顺序省略键名，用于高频场景的简洁写法；**具名参数**在括号内以 `key=value` 形式提供，用于不常用或顺序不明确的参数。两者可混用。括号内无 `=` 的裸关键字视为布尔 flag（如 `loop`、`nowait`）。
+
+**各指令位置参数顺序**：
+
+| 指令 | 位置参数顺序 | 保留具名参数 |
+|------|------------|------------|
+| `show` | 角色 → 位置 → duration | `enter` `layer` |
+| `hide` | 角色 → duration | `exit` |
+| `scene` | 路径 → duration | `with` |
+| `clear` | — | `with` |
+| `play music/sound/voice/ambient` | 路径 → volume → fadein → fadeout | `loop` |
+| `stop music/sound/voice/ambient` | fadeout | — |
+| `camera move` | zoom → duration → angle | `offset` `easing` |
+| `camera shake` | intensity → duration | `frequency` |
+| `camera reset` | duration | — |
+
+**子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound`）。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。
+
 ### 关键设计决策
 
 **表情控制**：表情只能通过对话行的修饰符 `(expression)` 设置，`show` 指令仅控制位置和可见性，不影响表情状态。避免 Ren'Py 中立绘状态残留的问题。
 
 **Python 块边界**：`$` 后允许任何在单行内 Python 语法合法的内容，包括三元表达式、多重赋值等（如 `$ x = 1 if flag else 2`、`$ a, b = b, a`）。需要换行的复合逻辑使用 `python:` 块，换行符即边界，无需记额外规则。
 
-**角色定义**：内联在 `.apy` 文件中，不使用外部 JSON。支持 `dyn define` 实现运行时动态定义。
+**角色定义**：内联在 `.apy` 文件中，不使用外部 JSON。`define` 默认推断类型，`define char` 为显式声明，语义等价但意图更清晰。支持 `dyn define` 实现运行时动态定义。
 
-**扩展参数语法**：所有指令的扩展参数统一使用括号具名参数。括号内支持两种形式：裸关键字（布尔 flag，如 `loop`、`nowait`）和具名参数（如 `volume=0.8`），两者可混用。解析规则：括号内有 `=` 的为具名参数，无 `=` 的为布尔 flag。
+**`show` 层级**：默认操作 sprite 层，需要时通过 `(layer=effect)` 等显式指定。层级扩展需求驱动，不过早设计。
 
-**并行与串行执行**：同行逗号分隔的指令并行执行，引擎默认等所有并行动画完成后推进。需要精细控制等待时机时，用 `as` 给动画命名，再用 `wait for` 显式控制。
+**并行与串行执行**：同行逗号分隔的指令并行执行，引擎默认等所有并行动画完成后推进。需要精细控制等待时机时，用 `as` 给动画命名，再用 `wait for` 显式控制。`wait for` 中 `for` 是介词而非子命令，`wait for all` / `wait for any` / `wait for <name>` 三种形式语义链完整。
 
-**`scene` 不隐式清空立绘**：`scene` 只负责切换背景，不自动 hide 现有立绘。需要清空时显式使用 `clear` 指令或 `scene ... (clear=True)`。
+**`scene` 不隐式清空立绘**：`scene` 只负责切换背景，不自动 hide 现有立绘。需要清空时显式使用独立的 `clear` 指令。`scene` 不接受 `clear` 参数，职责单一。
 
-**`call` 返回值**：支持两种等价写法——`call label() as result` 直接接返回值；或不加 `as`，之后用 `$ result = _return` 读取。
+**`call` 返回值**：只支持 `as` 写法——`call label() as result`。`_return` 作为引擎内部实现细节，不对外暴露。
+
+**`label` 签名**：直接使用 Python 函数签名风格，支持默认值、`*args`、`**kwargs`。`return` 后跟任意 Python 表达式。
 
 **跨文件引用**：`jump` / `call` 不需要 `import`，引擎启动时自动扫描所有 `.apy` 文件，label 冲突在启动时报错。跨文件引用 `define`（如 UI 控件）需要显式 `import`，使依赖关系可见。label 命名冲突由引擎扫描和 VSCode 插件共同处理，语言层不强制约束。
 
 **UI 控件定义**：在独立的 `.apy` 文件中定义，通过 `文件路径::控件名` 语法引用，如 `"ui/eileen_box.apy::EileenBox"`。
+
+**推断失败行为**：所有默认推断逻辑（层级推断、类型推断等）在推断失败时抛出明确错误，不静默走错分支。
 
 ---
 
