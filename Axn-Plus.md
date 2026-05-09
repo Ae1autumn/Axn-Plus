@@ -301,6 +301,167 @@ wait for anim_scene             # 等 scene track 完成后推进
 
 `parallel` 块在 GUI 脚本区中表现为时间轴视图，每个 `track` 对应一条轨道。
 
+**立绘状态（sprite states）**
+
+同一角色的不同表情、服装变体通过 `states` 声明管理。引擎默认按 `{角色名}_{state}.png` 命名约定自动扫描 `sprites` 目录，也可以显式声明覆盖：
+
+```apy
+define char eileen:
+    sprites "assets/eileen/"       # 自动扫描，按命名约定构建状态表
+    states:                        # 显式声明，覆盖自动扫描结果
+        neutral    "assets/eileen/neutral.png"
+        happy      "assets/eileen/happy.png"
+        sad        "assets/eileen/sad.png"
+        happy_alt  "assets/eileen/casual_happy.png"   # 服装变体
+```
+
+状态切换通过对话修饰符触发，是瞬时换帧，不产生过渡动画：
+
+```apy
+eileen: "早上好！" (happy)     # 切换到 happy state
+eileen: "……"     (sad)        # 切换到 sad state
+```
+
+需要带过渡的状态切换时，在修饰符内指定 `transition`：
+
+```apy
+eileen: "……" (sad, transition=dissolve)
+```
+
+**过渡（transition）**
+
+过渡作用于出入场和场景切换，使用已有的具名参数语法触发：
+
+```apy
+show eileen left 0.3 (enter=fade)
+hide eileen 0.5 (exit=dissolve)
+scene bg_room 0.5 (with=wipe)
+```
+
+内置过渡由引擎标准库提供（`fade`、`dissolve`、`wipe`、`pixelate`、`slidein_left`、`slideout_right` 等）。自定义过渡通过 Python 继承实现，不引入新语法：
+
+```python
+class SlideFromTop(Transition):
+    def __init__(self, duration=0.5):
+        self.duration = duration
+
+    def apply(self, surface, progress):
+        # progress: 0.0 → 1.0，引擎每帧调用
+        offset_y = int((1.0 - progress) * surface.height)
+        return surface.offset(0, -offset_y)
+```
+
+```apy
+show eileen center (enter=SlideFromTop(0.3))   # 直接传实例
+```
+
+**transform（对象属性动画）**
+
+`transform` 描述单个显示对象的属性随时间的变化，作用域是对象本身，不涉及演出流程。对标 Ren'Py ATL，但不引入独立子语言——`transform` 块使用有限的引擎关键字，复杂逻辑退到 Python。
+
+```apy
+# 定义可复用 transform
+transform shake_x:
+    keyframe 0.0: x_offset 0        # 单属性：折叠到同行
+    keyframe 0.1: x_offset -10
+    keyframe 0.2: x_offset 10
+    keyframe 0.3: x_offset -8
+    keyframe 0.4: x_offset 0
+    easing linear
+    repeat 1
+
+transform complex_enter:
+    keyframe 0.0:                   # 多属性：展开为块
+        alpha 0.0
+        y_offset -30
+        scale 0.9
+    keyframe 0.5:
+        alpha 0.8
+        y_offset -5
+        scale 1.02
+    keyframe 1.0:
+        alpha 1.0
+        y_offset 0
+        scale 1.0
+    easing ease_out
+    repeat 1
+
+transform breathe:
+    keyframe 0.0:  scale_y 1.0
+    keyframe 0.5:  scale_y 1.03
+    keyframe 1.0:  scale_y 1.0
+    easing ease_in_out
+    repeat forever                  # 持续循环
+```
+
+keyframe 折叠规则：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致。
+
+**transform 可用属性：**
+
+| 属性 | 含义 |
+|------|------|
+| `x_offset` / `y_offset` | 位移偏移（像素） |
+| `scale` / `scale_x` / `scale_y` | 缩放比例 |
+| `rotate` | 旋转角度 |
+| `alpha` | 透明度（0.0–1.0） |
+| `color_multiply` | 颜色乘算（闪红、变灰等），接受 `(r, g, b, a)` |
+
+`easing` 支持内置缓动名或 Python callable：
+
+```apy
+transform custom_ease:
+    keyframe 0.0: alpha 0.0
+    keyframe 1.0: alpha 1.0
+    easing lambda t: t * t          # 直接写 Python lambda
+    repeat 1
+```
+
+内置缓动：`linear`、`ease_in`、`ease_out`、`ease_in_out`、`bounce`、`elastic`。
+
+**应用 transform：**
+
+```apy
+show eileen center (transform=shake_x)              # 单个
+show eileen center (transform=[breathe, shake_x])   # 多个叠加，按列表顺序合成
+```
+
+transform 叠加时属性冲突（两个 transform 同时修改 `x_offset`）取最后一个，不做混合，引擎启动时对已知冲突输出警告。
+
+**复杂动画退到 Python：**
+
+`transform` 块覆盖不了的场景（帧动画、骨骼、物理），直接用 Python 类，`show` 接受任何实现了 `AnimatedSprite` 接口的对象：
+
+```python
+class LivePortrait(AnimatedSprite):
+    def __init__(self, char):
+        self.frames = char.load_frames()
+        self.timer = 0.0
+
+    def update(self, dt):
+        self.timer += dt
+        return self.frames[int(self.timer * 12) % len(self.frames)]
+```
+
+```apy
+show LivePortrait(eileen) center
+```
+
+**`animation` 与 `transform` 的边界：**
+
+- `animation`：引擎指令序列，描述演出流程（谁在哪里、镜头怎么动、什么时候等待）
+- `transform`：keyframe 数据，描述单个对象的属性变化
+
+两者组合使用：
+
+```apy
+animation eileen_enter:
+    show eileen right 0.0 (transform=complex_enter)
+    camera move 1.1 0.5
+    wait for all
+```
+
+`transform` 块在 GUI 脚本区中表现为时间轴 keyframe 编辑器，属性列表完整可解析。Python `AnimatedSprite` 子类作为代码节点处理。
+
 ---
 
 #### 数据与逻辑
@@ -380,7 +541,11 @@ include "common/prologue.apy"
 | `with store` 块 | 脚本区代码节点（与 `python:` 块同等处理） |
 | `const` | 脚本区只读常量节点 |
 | `template / extends` | 窗口区组件继承树 |
-| `include` | 文本区引用积木块，展开内容不在当前文件编辑 |
+| `transform` block | 脚本区 keyframe 时间轴编辑器，属性列表完整可解析 |
+| `AnimatedSprite` Python 类 | 脚本区代码节点（与 `python:` 块同等处理） |
+| `transition`（内置） | 参数选择器，下拉列表 |
+| `transition`（自定义 Python 类） | 脚本区代码节点 |
+| `states` 声明 | 角色定义积木块内的状态表编辑器 |
 
 ### 静态与动态修饰符
 
@@ -426,6 +591,7 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 | `call animation` | 名称 | — |
 | `parallel` | — | `wait` |
 | `include` | 路径 | — |
+| `show`（带 transform） | 角色 → 位置 → duration | `enter` `layer` `transform` |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound`）。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。
 
@@ -452,6 +618,14 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 **UI 控件定义**：在独立的 `.apy` 文件中定义，通过 `文件路径::控件名` 语法引用，如 `"ui/eileen_box.apy::EileenBox"`。
 
 **推断失败行为**：所有默认推断逻辑（层级推断、类型推断等）在推断失败时抛出明确错误，不静默走错分支。
+
+**transform 与 animation 边界**：`transform` 描述单个对象的属性动画（keyframe 数据），`animation` 描述演出流程（指令序列）。两者职责不重叠，通过 `(transform=...)` 参数组合使用。`transform` 块内只允许有限的引擎关键字，不允许 Python，保证 GUI 可完整解析；超出表达能力的场景通过继承 `AnimatedSprite` 退到 Python。
+
+**transform 叠加冲突**：多个 transform 同时修改同一属性时，取列表中最后一个，不做混合。引擎启动时对已知冲突输出警告，不静默。
+
+**keyframe 折叠规则**：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致，解析器无歧义。
+
+**transition 扩展**：内置过渡由引擎标准库提供，自定义过渡继承 `Transition` 抽象类，通过 `apply(surface, progress)` 接口实现，直接传实例到具名参数，不引入新语法。
 
 ---
 
