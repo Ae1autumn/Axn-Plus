@@ -67,17 +67,49 @@ define eileen:
     name "Eileen"
     color #ff8800
     sprites "assets/eileen/"
+    voice_prefix "vo/eileen/"
+    default_expression "neutral"
+    side_image "ui/eileen_side.png"
+    font "fonts/handwriting.ttf"
+    type_sound "sfx/type_eileen.ogg"
+    dialogue_box "ui/eileen_box.apy::EileenBox"
 
-# 角色对话，表情作为行内修饰符
+# 角色对话，表情作为行内修饰符；括号内支持裸关键字（布尔 flag）和具名参数
 eileen: "你好。" (happy)
-eileen: "今天天气不错。"
+eileen: "今天天气不错。" (speed=0.5, voice="vo/001.ogg", nowait)
 
 # 旁白
 @ "阳光透过窗户照进来。"
 
 # 位置与可见性（show 不控制表情）
-show eileen at left
-hide eileen
+# 单个角色
+show eileen at left (enter=slidein_left, duration=0.3)
+hide eileen (exit=fadeout, duration=0.5)
+
+# 多角色并行：同行逗号分隔 = 并行执行，换行 = 串行执行
+show eileen at left (enter=slidein, duration=0.3) as anim_eileen, sophia at right (enter=slideout, duration=1.0) as anim_sophia
+
+# 等待控制
+wait                    # 等用户点击
+wait 2.0                # 等 2 秒
+wait for anim_eileen    # 等特定动画完成
+wait for all            # 等所有动画完成（默认行为，显式写出意图更清晰）
+wait for any            # 等最先完成的动画
+
+# 场景切换（不隐式清空立绘）
+scene bg_room (with=fade, duration=0.5)
+scene bg_room (clear=True, with=fade, duration=0.5)  # 显式清空立绘
+
+# 清空所有立绘
+clear (with=fade)
+
+# 镜头控制
+camera (zoom=1.2, pan=left, duration=0.5)
+
+# 音频
+play music "bgm/morning.ogg" (fadein=1.0, loop, volume=0.8)
+play sound "sfx/door.ogg" (volume=0.6)
+stop music (fadeout=1.0)
 
 # 单行 Python（单行内 Python 语法合法即可）
 $ flag_met_eileen = True
@@ -91,6 +123,11 @@ python:
 label morning_scene:
     eileen: "早上好。" (smile)
 
+# 带参数的标签
+label morning_scene(mood, weather):
+    eileen: "早上好。"
+    return result_value
+
 # 条件
 if flag_met_eileen:
     eileen: "好久不见。"
@@ -98,11 +135,31 @@ else:
     eileen: "初次见面。"
 
 # 菜单
-menu:
+menu (timeout=10.0, default="拒绝"):
     "答应她":
+        $ flag_agreed = True
         jump route_a
-    "拒绝":
+    "拒绝" (if=flag_can_refuse):
         jump route_b
+    "询问详情" (if=flag_met_eileen, disabled=flag_tired):
+        jump route_c
+    "隐藏选项" (hidden=flag_secret):
+        jump route_secret
+
+# 跳转与调用
+jump route_a
+
+# call 不接返回值
+call morning_scene(mood="happy")
+
+# call 用 as 接返回值
+call morning_scene(mood="happy") as result
+
+# call 用 _return 接返回值（等价写法）
+call morning_scene(mood="happy")
+$ result = _return
+
+return
 ```
 
 ### 静态与动态修饰符
@@ -130,6 +187,18 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 **Python 块边界**：`$` 后允许任何在单行内 Python 语法合法的内容，包括三元表达式、多重赋值等（如 `$ x = 1 if flag else 2`、`$ a, b = b, a`）。需要换行的复合逻辑使用 `python:` 块，换行符即边界，无需记额外规则。
 
 **角色定义**：内联在 `.apy` 文件中，不使用外部 JSON。支持 `dyn define` 实现运行时动态定义。
+
+**扩展参数语法**：所有指令的扩展参数统一使用括号具名参数。括号内支持两种形式：裸关键字（布尔 flag，如 `loop`、`nowait`）和具名参数（如 `volume=0.8`），两者可混用。解析规则：括号内有 `=` 的为具名参数，无 `=` 的为布尔 flag。
+
+**并行与串行执行**：同行逗号分隔的指令并行执行，引擎默认等所有并行动画完成后推进。需要精细控制等待时机时，用 `as` 给动画命名，再用 `wait for` 显式控制。
+
+**`scene` 不隐式清空立绘**：`scene` 只负责切换背景，不自动 hide 现有立绘。需要清空时显式使用 `clear` 指令或 `scene ... (clear=True)`。
+
+**`call` 返回值**：支持两种等价写法——`call label() as result` 直接接返回值；或不加 `as`，之后用 `$ result = _return` 读取。
+
+**跨文件引用**：`jump` / `call` 不需要 `import`，引擎启动时自动扫描所有 `.apy` 文件，label 冲突在启动时报错。跨文件引用 `define`（如 UI 控件）需要显式 `import`，使依赖关系可见。label 命名冲突由引擎扫描和 VSCode 插件共同处理，语言层不强制约束。
+
+**UI 控件定义**：在独立的 `.apy` 文件中定义，通过 `文件路径::控件名` 语法引用，如 `"ui/eileen_box.apy::EileenBox"`。
 
 ---
 
