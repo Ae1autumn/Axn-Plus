@@ -170,6 +170,68 @@ GUI 编辑和代码编辑之间的**双向同步**是核心设计约束：
 
 ---
 
+## 存档机制
+
+### 作用域与序列化
+
+引擎维护两个持久化对象：
+
+- **`store`**：当前存档槽的游戏状态，随存档槽保存和加载
+- **`persistent`**：跨存档的全局数据（画廊解锁、总游玩时长等），游戏退出时自动保存
+
+两者遵守相同的序列化规则。
+
+### 序列化规则
+
+| 场景 | 处理方式 |
+|------|----------|
+| 基础类型（`int`、`str`、`list`、`dict` 等） | 直接 pickle，零摩擦 |
+| 自定义类，简单场景 | `@saveable` 装饰器，pickle 兜底，版本兼容由开发者自负 |
+| 自定义类，需要跨版本 migration | 继承 `Saveable`，实现 `__save__` / `__load__`，支持 `__version__` |
+| 未声明的自定义类 | 运行时抛 `AxnSaveError`，提示正确声明方式 |
+
+存档格式为 pickle + 版本号头；`Saveable` 子类走自定义序列化路径，绕过 pickle。
+
+### 两种声明方式
+
+**`@saveable`**：轻量声明，引擎用 pickle 兜底。适合字段全为基础类型、不需要精细控制的简单类。
+
+```python
+@saveable
+class QuestState:
+    def __init__(self):
+        self.progress = 0
+        self.completed = False
+```
+
+若类中含不可 pickle 的字段（lambda、文件句柄、socket 等），存档时抛出 `AxnSaveError`，错误信息会指出问题字段并建议改用 `Saveable`。
+
+**`Saveable`**：重量声明，开发者完全控制序列化逻辑。适合需要跨版本 migration 的场景。
+
+```python
+class QuestState(Saveable):
+    __version__ = 2
+
+    def __save__(self):
+        return {'progress': self.progress, 'completed': self.completed}
+
+    def __load__(self, data, version):
+        if version < 2:
+            # 旧存档没有 completed 字段，补默认值
+            data['completed'] = False
+        self.progress = data['progress']
+        self.completed = data['completed']
+```
+
+### 未声明类的错误信息
+
+```
+AxnSaveError: Object of type 'QuestState' is not saveable.
+Declare it with @saveable or inherit from Saveable.
+```
+
+---
+
 ## 不是什么
 
 - 不是 Ren'Py 的分支或 fork
