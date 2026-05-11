@@ -85,8 +85,9 @@ eileen: "今天天气不错。" (speed=0.5, voice="vo/001.ogg", nowait)
 # 等价于 voice="vo/eileen/001.ogg"（假设 voice_prefix = "vo/eileen/"）
 eileen: "你好。" (voice="001")
 
-# 旁白
+# 旁白（三种等价写法，风格自选，同一项目内保持一致）
 @ "阳光透过窗户照进来。"
+narrator: "阳光透过窗户照进来。"     # 与角色行对齐，可读性更好
 
 # 位置与可见性（show 不控制表情）
 # 指令结构：动词 [子命令] [位置参数...] (具名参数...)
@@ -181,11 +182,11 @@ layer create effect (above=sprite)      # 创建层，指定位于 sprite 层之
 layer destroy effect                    # 销毁层
 layer order sprite effect ui            # 重排层顺序（从下到上）
 
-# say 动词（显式说话者，支持动态角色变量）
-# @ 和 角色: 都是 say 的语法糖，底层统一
-say narrator "阳光透过窗户照进来。"     # 等价于 @ "..."
-say eileen "你好。" (happy)             # 等价于 eileen: "你好。" (happy)
+# say 动词（专用于说话者在运行时动态决定的场景）
+# 静态说话者必须使用 角色: 或 @，用 say 传入静态角色名时报错
+$ speaker = get_current_speaker()
 say speaker "动态说话者。"              # speaker 是 store 变量，运行时求值
+say speaker "下一句。" (happy)          # 修饰符与对话行完全一致
 
 # choice（动态菜单，程序化生成选项列表）
 # menu 是静态声明语义（编译期确定），choice 专门处理动态场景
@@ -826,7 +827,7 @@ include "common/prologue.apy"
 | `play video` | 文本区视频积木块；`(async)` 标记为非阻塞节点 |
 | `camera follow` | 脚本区镜头跟随节点，与 `camera move` 同类 |
 | `layer create/destroy/order` | 脚本区层管理节点，独立面板展示层栈结构 |
-| `say` 动词 | 对话积木块；角色为变量时降级为代码节点，归属关系保留 |
+| `say` 动词 | 脚本区动态说话者节点，角色变量字段可编辑；传入静态角色名时编辑器报错提示改用 `角色:` |
 | `choice` 动词 | 脚本区代码节点（选项列表为运行时数据，GUI 不解析内容） |
 | `input disable` / `input enable` | 脚本区输入控制节点；块语法对应包裹节点，对称写法对应独立节点 |
 | `modal show/hide` | 脚本区模态框节点；`as result` 显示返回值变量名 |
@@ -890,7 +891,7 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 | `stop video` | fadeout | — |
 | `pause music/sound/video` | fadeout | — |
 | `resume music/sound/video` | fadein | — |
-| `say` | 角色或 `narrator` → 文本 | 与对话行修饰符一致 |
+| `say` | 角色变量 → 文本 | 与对话行修饰符一致 |
 | `choice` | 选项列表变量 | `timeout` `default` |
 | `camera move` | zoom → duration → angle | `offset` `easing` |
 | `camera shake` | intensity → duration | `frequency` |
@@ -966,6 +967,8 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 **`narrate` 块**：连续旁白的语法糖，替代重复的 `@`。块内裸字符串全部作为旁白处理，支持修饰符。GUI 对应旁白段落积木块。
 
+**`narrator` 保留关键字**：`@` 和 `narrator:` 是单行旁白的两种等价写法，`with narrator:` 与 `narrate:` 块等价。`narrator` 是引擎保留关键字，不允许用户通过 `define` 覆盖；尝试 `define char narrator` 时引擎在启动时报错。三种旁白写法（`@`、`narrator:`、`narrate:` 块）风格自选，同一项目内保持一致即可。
+
 **`voice` 短路径**：对话修饰符中 `voice="001"` 自动展开为 `voice_prefix + "001" + 默认扩展名`（由 `define` 中的 `voice_prefix` 和可选的 `voice_ext` 字段决定）。完整路径写法永远有效，短路径是语法糖。推断失败时抛出 `AxnVoiceError`，不静默回退。
 
 **`flag` 声明块**：只允许顶层声明，右值只允许字面量。引用未声明变量时输出警告不报错，保持与 `$` 工作流的兼容性。`flag` 声明的变量直接写入 `store`，无命名空间前缀，访问方式与普通变量完全一致。
@@ -986,7 +989,7 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 **`play video` 默认阻塞**：与 `play music`（默认非阻塞）相反，`play video` 默认阻塞执行流，播完后才推进。非阻塞时显式加 `(async)`。理由：视频大多数时候是过场动画，播完才推进是高频用法；背景循环视频是少数场景，需要显式声明意图。`(blocking)` 关键字保留但冗余，不推荐写。
 
-**`say` 动词**：`@`（旁白）和 `角色:` 都是 `say` 的语法糖，底层统一为 `say <角色或narrator> <文本> (修饰符)`。`say` 的存在价值是支持动态说话者——角色变量在运行时求值，`@` 和 `角色:` 无法表达此场景。修饰符与对话行修饰符完全一致。
+**`say` 动词**：专用于说话者在运行时动态决定的场景。静态说话者必须使用 `角色:` 或 `@`，`say` 传入静态角色名（编译期可确定的标识符）时报错，不允许作为 `角色:` 的等价写法。此限制保证代码风格统一，消除"两种写法都能用"带来的歧义。修饰符与对话行修饰符完全一致。
 
 **`choice` 动词**：`menu` 是静态声明语义，选项在编译期确定，GUI 完整解析为菜单节点。`choice` 专门处理动态场景，接受运行时生成的选项列表（`list[dict]`），整体作为代码节点处理，GUI 不尝试解析列表内容。两者定位不重叠，`choice` 不是 `menu` 的超集。
 
