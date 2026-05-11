@@ -45,6 +45,38 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 | iOS | ❌ | 不支持运行时动态库注入 |
 | Web | ❌ | 环境本身无法运行 |
 
+**Android 动态库说明**：运行时注入指加载**打包在发行包内**的原生扩展（`.so`），不支持运行时从外部来源下载并执行。Android 10+ 的 W^X 策略禁止从可写目录执行原生代码，从外部下载的 `.so` 无法直接 `dlopen`，且从外部服务器动态下载执行 native 代码会触发 Play Store 审核拒绝。引擎提供 Android 专用的库加载 API（`engine.load_native(name)`），自动处理 APK assets → 应用私有目录 → `dlopen` 的完整路径，不暴露原始 `dlopen` 给用户。
+
+---
+
+## Python 最低版本
+
+**要求 Python 3.11+。**
+
+理由：
+- CPython 3.11 引入了 `co_positions()`，提供每条字节码指令的列级位置信息（`line, end_line, col, end_col`），配合 `linecache` 注册 `.apy` 源码，可让标准 `traceback` 模块直接展示 `.apy` 源码行，无需自定义异常处理。
+- `code.replace(co_firstlineno=apy_line_offset)` 在 3.11 的新 `co_linetable` 格式下行号偏移更精确。
+- Python 3.10 已于 2026 年 10 月 EOL，锁定 3.11+ 无明显生态损失。
+- `match` 语句（3.10+）可直接使用。
+
+`.apy` 中 Python 块的编译方式：
+
+```python
+code = compile(
+    source,
+    filename="scene.apy",       # 显示在 traceback 里的文件名
+    mode="exec",
+)
+# 3.11+ 修正行号偏移
+code = code.replace(co_firstlineno=apy_line_offset)
+
+# 注册 .apy 源码到 linecache，使标准 traceback 可直接展示源码行
+import linecache
+def register_apy_source(filepath: str, source: str):
+    lines = source.splitlines(keepends=True)
+    linecache.cache[filepath] = (len(source), None, lines, filepath)
+```
+
 ---
 
 ## `.apy` 脚本格式
@@ -740,6 +772,24 @@ with store:
 
 语义上等价于连续写多行 `$`，但意图更清晰——这是一组原子性的状态变更。块内只允许赋值语句，不允许流程控制（`if`、`for`、函数调用等）；违反时抛出解析错误。
 
+**检查时机：两阶段**
+
+- **阶段一（引擎启动时，静态检查）**：解析器扫描 `with store` 块的 AST，检查每条语句是否为纯赋值（`ast.Assign` / `ast.AugAssign`），发现违规立即报错，不等到运行时。
+- **阶段二（`exec()` 前，防御性守卫）**：即使静态检查通过，`exec()` 前再做一次类型断言，防止动态生成代码绕过静态检查的极端情况。
+
+**右值限制**：只允许字面量或 `store` 变量引用。右值含函数调用时报错并提示改用 `$` 块——`with store` 的核心价值是"一眼看出状态变更了什么"，右值复杂了就失去这个价值。
+
+```
+AxnParseError: 'with store' block only allows assignment statements (line 42, scene.apy)
+  Found: if flag_met_eileen:  ← control flow not allowed here
+  Hint: Move logic to a 'python:' block above, then assign the result with '$' or 'set'.
+  42 | with store:
+  43 |     if flag_met_eileen:   ← violation
+  44 |         day += 1
+```
+
+链式赋值（`a = b = 0`）和解包赋值（`a, b = b, a`）均允许，AST 层面仍为 `ast.Assign`，语义上是纯状态变更。
+
 **`const` 声明**
 
 ```apy
@@ -1106,6 +1156,23 @@ flag:
 **`play video` 默认阻塞**：与 `play music`（默认非阻塞）相反，`play video` 默认阻塞执行流，播完后才推进。非阻塞时显式加 `(async)`。理由：视频大多数时候是过场动画，播完才推进是高频用法；背景循环视频是少数场景，需要显式声明意图。`(blocking)` 关键字保留但冗余，不推荐写。
 
 **`say` 动词**：专用于说话者在运行时动态决定的场景。静态说话者必须使用 `角色:` 或 `@`，`say` 传入静态角色名（编译期可确定的标识符）时报错，不允许作为 `角色:` 的等价写法。此限制保证代码风格统一，消除"两种写法都能用"带来的歧义。修饰符与对话行修饰符完全一致。
+
+**`say` 静态/动态判断规则**：基于第一遍扫描建立的全局符号表（所有 `define` 声明的角色名）做两级判断：
+
+- **规则一**：标识符在符号表中存在（已通过 `define` 声明的角色名）→ 判定为静态，报错并提示改用 `角色:` 语法。
+- **规则二**：标识符不在符号表中 → 判定为运行时变量，允许通过，运行时检查是否为 `Character` 实例。
+
+```
+AxnParseError: 'say' requires a runtime variable. (line 10, scene.apy)
+  'eileen' is a defined character. Use 'eileen: "hello"' instead.
+```
+
+```
+AxnRuntimeError: 'say' requires a Character instance, got str.
+  Hint: Did you mean to use a store variable holding a Character object?
+```
+
+**变量名遮蔽禁止**：引擎在 `$` 赋值时检查左值是否与符号表中的角色名冲突，冲突时报错。禁止将 `store` 变量命名为已声明的角色名，避免在 `say` 处引入复杂的遮蔽逻辑。
 
 **`choice` 动词**：`menu` 是静态声明语义，选项在编译期确定，GUI 完整解析为菜单节点。`choice` 专门处理动态场景，接受运行时生成的选项列表（`list[dict]`），整体作为代码节点处理，GUI 不尝试解析列表内容。两者定位不重叠，`choice` 不是 `menu` 的超集。
 
