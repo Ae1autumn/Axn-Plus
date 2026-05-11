@@ -77,9 +77,57 @@ define eileen:
 
 define char eileen:   # 显式声明，等价于上方写法，意图更清晰
 
+# 分层立绘：states 和 layers 二选一，不可混用
+# states：整图切换模型
+define char sophia:
+    name "Sophia"
+    states:
+        neutral  "sophia_neutral.png"
+        happy    "sophia_happy.png"
+        sad      "sophia_sad.png"
+    default_expression "neutral"
+
+# layers：分层叠加模型
+define char eileen:
+    name "Eileen"
+    sprites "assets/eileen/"
+    layers:
+        body    "body_default.png"           # 静态层，不参与状态切换
+        outfit:                              # 动态层，支持换装
+            school   "outfit_school.png"
+            casual   "outfit_casual.png"
+        face:                                # 动态层，表情
+            neutral  "face_neutral.png"
+            happy    "face_happy.png"
+            sad      "face_sad.png"
+        brow:                                # 动态层，眉毛
+            neutral  "brow_neutral.png"
+            angry    "brow_angry.png"
+        hair    "hair_default.png"           # 静态层
+    expressions:                             # 组合映射：一个修饰符同时设置多个动态层
+        happy:  (face=happy, brow=neutral)
+        angry:  (face=sad,   brow=angry)
+        crying: (face=sad,   brow=neutral)
+    default_expression "neutral"
+    # layers 叠加顺序规则：
+    # 要么全部走声明顺序（不写 z_order），要么全部写 z_order，不允许混用
+    # 混用时引擎启动报错
+
+# expression 指令：无对话时切换表情（states 和 layers 模型均支持）
+expression eileen happy                      # 走 expressions 映射（layers 模型）或整图切换（states 模型）
+expression eileen (face=happy, brow=angry)   # 直接指定各层，绕过 expressions 映射（仅 layers 模型）
+expression eileen (outfit=casual)            # 换装（仅 layers 模型）
+expression eileen happy (transition=dissolve) # 带过渡效果
+
 # 角色对话，表情作为行内修饰符；括号内支持裸关键字（布尔 flag）和具名参数
 eileen: "你好。" (happy)
 eileen: "今天天气不错。" (speed=0.5, voice="vo/001.ogg", nowait)
+# layers 模型下可直接指定各层（绕过 expressions 映射）
+eileen: "……" (face=happy, brow=angry)
+eileen: "换装了。" (outfit=casual)
+# 表情状态跟着角色对象走，不跟场景走：
+# 对话修饰符修改角色的持久表情状态，与角色是否可见无关
+# show 出场时使用角色当前表情状态，不重置为 default_expression
 
 # voice 短路径：相对 voice_prefix 的短路径，引擎自动补全扩展名
 # 等价于 voice="vo/eileen/001.ogg"（假设 voice_prefix = "vo/eileen/"）
@@ -112,15 +160,22 @@ wait for anim_eileen    # 等特定动画完成
 wait for all            # 等所有动画完成（默认行为，显式写出意图更清晰）
 wait for any            # 等最先完成的动画
 
-# 场景切换（不隐式清空立绘）
+# 场景切换
+# scene 默认同时清空 sprite 层（高频用法零开销）
 # scene 位置参数顺序：路径 → duration
-scene bg_room                           # 切换背景
+scene bg_room                           # 切换背景，默认清空 sprite 层
 scene bg_room 0.5                       # 指定 duration
 scene bg_room 0.5 (with=fade)           # 补全具名参数
+scene bg_room (keep)                    # 保留所有立绘
+scene bg_room (keep=eileen)             # 只保留 eileen，其余清除
+scene bg_room (keep=[eileen, sophia])   # 保留多个
 
-# 清空所有立绘（scene 不负责清空，需显式使用 clear）
-clear                   # 立即清空
-clear (with=fade)       # 带过渡
+# clear：精确清除，无过渡，不受 scene 影响
+clear                           # 清除 sprite 层所有元素
+clear eileen                    # 清除指定角色
+clear eileen sophia             # 清除多个
+clear (layer=effect)            # 清除指定层所有元素
+clear eileen (layer=effect)     # 清除指定层上的指定元素
 
 # 镜头控制（子命令结构）
 # camera move 位置参数顺序：zoom → duration → angle
@@ -811,6 +866,9 @@ include "common/prologue.apy"
 | `transition`（内置） | 参数选择器，下拉列表 |
 | `transition`（自定义 Python 类） | 脚本区代码节点 |
 | `states` 声明 | 角色定义积木块内的状态表编辑器 |
+| `layers` 声明 | 角色定义积木块内的分层立绘编辑器；静态层与动态层分别呈现；`expressions` 映射为独立映射表编辑器 |
+| `expression` 指令 | 脚本区表情切换积木块；`states` 模型显示表情名下拉列表；`layers` 模型显示各动态层的独立下拉列表；直接指定层时与 `expressions` 映射积木块同类 |
+| `layer create (persistent)` | 层管理面板，持久层以特殊标记区分 |
 | `elif` / `unless` | 条件积木块的分支节点，与 `if` / `else` 同等处理 |
 | `match`（简单形式） | 脚本区多路分支节点，值 → label 完整可解析 |
 | `match`（复杂形式，含表达式或 guard） | 整块降级为代码节点 |
@@ -883,8 +941,9 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 |------|------------|------------|
 | `show` | 角色 → 位置 → duration | `enter` `layer` `transform` `compose` |
 | `hide` | 角色 → duration | `exit` |
-| `scene` | 路径 → duration | `with` |
-| `clear` | — | `with` |
+| `scene` | 路径 → duration | `with` `keep` |
+| `clear` | 角色列表（可选） | `layer` |
+| `expression` | 角色 → 表情名（可选） | 动态层具名参数（`face` `brow` `outfit` 等）`transition` |
 | `play music/sound/voice/ambient` | 路径 → volume → fadein → fadeout | `loop` |
 | `play video` | 路径 → volume | `layer` `loop` `async` `blocking` |
 | `stop music/sound/voice/ambient` | fadeout | — |
@@ -919,7 +978,7 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 ### 关键设计决策
 
-**表情控制**：表情只能通过对话行的修饰符 `(expression)` 设置，`show` 指令仅控制位置和可见性，不影响表情状态。避免 Ren'Py 中立绘状态残留的问题。
+**表情控制**：表情状态跟着角色对象走，不跟场景走。对话修饰符修改角色的**持久表情状态**，与角色是否可见无关；`show` 出场时使用角色当前表情状态，不重置为 `default_expression`。`show` 指令仅控制位置和可见性，不影响表情状态。无对话时切换表情使用独立的 `expression` 指令，支持可选的 `transition` 参数。
 
 **Python 块边界**：`$` 后允许任何在单行内 Python 语法合法的内容，包括三元表达式、多重赋值等（如 `$ x = 1 if flag else 2`、`$ a, b = b, a`）。需要换行的复合逻辑使用 `python:` 块，换行符即边界，无需记额外规则。
 
@@ -929,7 +988,11 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 **并行与串行执行**：同行逗号分隔的指令并行执行，引擎默认等所有并行动画完成后推进。需要精细控制等待时机时，用 `as` 给动画命名，再用 `wait for` 显式控制。`wait for` 中 `for` 是介词而非子命令，`wait for all` / `wait for any` / `wait for <name>` 三种形式语义链完整。
 
-**`scene` 不隐式清空立绘**：`scene` 只负责切换背景，不自动 hide 现有立绘。需要清空时显式使用独立的 `clear` 指令。`scene` 不接受 `clear` 参数，职责单一。
+**`scene` 默认清空 sprite 层**：`scene` 切换背景时默认同时清空 sprite 层（高频用法零开销）。需要保留立绘时显式使用 `(keep)` 或 `(keep=角色名)` 具名参数；`(keep=[eileen, sophia])` 支持保留多个。`scene` 只清非持久层，持久层（如 `ui`）完全不受影响。
+
+**`clear` 指令**：精确清除，无过渡，定位是"批量/精确移除"而非"退场"。支持指定角色（`clear eileen`）、多个角色（`clear eileen sophia`）、指定层（`clear (layer=effect)`）、指定层上的指定元素（`clear eileen (layer=effect)`）。无参数时清除 sprite 层所有元素。`clear` 不支持过渡动画，需要过渡退场时使用 `hide`。`clear` 可以显式清除持久层，但需要明确指定 `layer=`，不会误伤持久层。
+
+**`hide` 与 `clear` 的语义区别**：`hide eileen 0.5 (exit=fadeout)` 隐藏单个角色，支持过渡动画，强调"退场"；`clear eileen` 立即移除，无过渡，强调"清除"。需要过渡时用 `hide`，需要批量或精确无过渡移除时用 `clear`。
 
 **`call` 返回值**：只支持 `as` 写法——`call label() as result`。`_return` 作为引擎内部实现细节，不对外暴露。
 
@@ -1000,6 +1063,12 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 **`camera follow`**：`camera` 的新子命令，与 `move` / `shake` / `reset` 平级。`camera follow none` 取消跟随，恢复静止镜头。`lag` 参数控制跟随延迟（秒），值越大镜头越"懒"，0 为即时跟随。`camera follow` 与 `camera move` 可共存——`follow` 设定跟随目标，`move` 在此基础上叠加偏移。
 
 **`layer` 管理**：`layer` 作为独立动词，子命令 `create` / `destroy` / `order`。`create` 的 `above` / `below` 具名参数指定新层相对于已有层的位置；`order` 接受层名序列（从下到上），一次性重排所有层顺序。层的创建和销毁在引擎启动时静态检查，运行时销毁非空层时输出警告。
+
+**持久层**：`layer create` 支持 `persistent` flag，声明为持久层的层不受 `scene` 的默认清除影响。内置层中 `ui` 默认持久，`bg` / `sprite` / `effect` 默认非持久。`clear (layer=ui_hud)` 可以显式清除持久层，但 `clear`（无 `layer` 参数）只清非持久层，不误伤持久层。
+
+**分层立绘**：角色立绘支持两种模型，二选一，同一 `define` 块内不可混用，混用时引擎启动报错。`states` 模型：整图切换，每个状态对应一张完整立绘图片。`layers` 模型：多图层叠加，静态层（单文件）不参与状态切换，动态层（有子状态列表）通过修饰符切换；`expressions` 映射将一个修饰符名映射到多个动态层的组合状态，`expressions` 映射必须覆盖所有动态层，漏写时引擎启动报错。图层叠加顺序：要么全部走声明顺序，要么全部写 `z_order`，不允许混用，混用时引擎启动报错。
+
+**`expression` 指令**：无对话时切换表情的专用指令，`show` 不承担此职责。`states` 模型下 `expression eileen happy` 整图切换；`layers` 模型下走 `expressions` 映射。`layers` 模型支持直接指定各层（`expression eileen (face=happy, brow=angry)`）绕过映射，也支持换装（`expression eileen (outfit=casual)`）。可选 `transition` 具名参数控制过渡效果。两套模型下用户侧语法完全一致，差异由引擎内部按角色声明类型分派。
 
 ---
 
