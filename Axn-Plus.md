@@ -151,6 +151,74 @@ play sound "sfx/door.ogg" 0.6
 stop music                              # 立即停止
 stop music 1.0                          # 指定 fadeout
 
+# pause / resume（保留进度暂停，与 stop 语义不同）
+# pause 位置参数顺序：fadeout
+pause music                             # 立即暂停
+pause music 0.3                         # 带 fadeout 的暂停（画面渐暗）
+resume music                            # 立即恢复
+resume music 0.3                        # 带 fadein 的恢复
+pause video
+resume video 0.3
+
+# 视频（play 子命令扩展）
+# play video 位置参数顺序：路径 → volume
+# 默认阻塞（blocking），非阻塞时显式加 (async)
+play video "cutscene/intro.mp4"                                     # 全默认，阻塞
+play video "cutscene/intro.mp4" 0.8                                 # 指定音量
+play video "cutscene/intro.mp4" (layer=effect)                      # 指定层
+play video "cutscene/intro.mp4" (async)                             # 非阻塞，背景播放
+play video "bg/rain_loop.mp4" (layer=bg, loop, async)               # 循环背景视频
+stop video                                                          # 立即停止
+stop video 0.5                                                      # 带 fadeout
+
+# camera follow（镜头跟随角色）
+camera follow eileen                    # 跟随 eileen 的位置
+camera follow eileen (lag=0.3)          # 带延迟跟随，更自然
+camera follow none                      # 取消跟随
+
+# 层管理
+layer create effect (above=sprite)      # 创建层，指定位于 sprite 层之上
+layer destroy effect                    # 销毁层
+layer order sprite effect ui            # 重排层顺序（从下到上）
+
+# say 动词（显式说话者，支持动态角色变量）
+# @ 和 角色: 都是 say 的语法糖，底层统一
+say narrator "阳光透过窗户照进来。"     # 等价于 @ "..."
+say eileen "你好。" (happy)             # 等价于 eileen: "你好。" (happy)
+say speaker "动态说话者。"              # speaker 是 store 变量，运行时求值
+
+# choice（动态菜单，程序化生成选项列表）
+# menu 是静态声明语义（编译期确定），choice 专门处理动态场景
+$ options = build_options(day, relationship)
+choice options (timeout=10.0)
+
+# 禁用 / 恢复输入
+# 形式一：对称写法（enable / disable 独立调用）
+input disable                           # 全部禁用
+input disable (skip, rollback)          # 只禁用跳过和回滚，保留点击推进
+input disable (all)                     # 显式全部禁用（同无参数写法）
+input enable                            # 恢复全部
+
+# 形式二：块语法（推荐，引擎保证块结束后自动恢复，异常安全）
+input disable:
+    play video "cutscene/intro.mp4"
+    wait for video
+    camera shake 10 0.5
+# 块结束后自动 enable，即使中途 jump 或异常也能正确恢复
+
+# 模态框焦点接管
+# modal show 隐含 input disable (all)，无需手动管理焦点
+modal show "ui/confirm_quit.apy::ConfirmDialog"                     # 无返回值
+modal show "ui/confirm_quit.apy::ConfirmDialog" as result           # 阻塞，等用户选择后写入 result
+modal hide                                                          # 手动关闭（通常由模态框内部触发）
+
+# modal 配合条件跳转
+modal show "ui/confirm_quit.apy::ConfirmDialog" as result
+if result == "confirm":
+    jump ending_quit
+else:
+    jump resume_game
+
 # 单行 Python（单行内 Python 语法合法即可）
 $ flag_met_eileen = True
 
@@ -754,6 +822,14 @@ include "common/prologue.apy"
 | `checkpoint` | 脚本区存档点积木块 |
 | `assert` | 脚本区断言积木块，显示条件 + 消息；release 模式下标记为灰色（已剥离） |
 | `on enter / on key` | 编辑器独立事件钩子面板，与流程图分离展示 |
+| `pause / resume music/sound/video` | 音频积木块的暂停/恢复节点，与 `play` / `stop` 同类 |
+| `play video` | 文本区视频积木块；`(async)` 标记为非阻塞节点 |
+| `camera follow` | 脚本区镜头跟随节点，与 `camera move` 同类 |
+| `layer create/destroy/order` | 脚本区层管理节点，独立面板展示层栈结构 |
+| `say` 动词 | 对话积木块；角色为变量时降级为代码节点，归属关系保留 |
+| `choice` 动词 | 脚本区代码节点（选项列表为运行时数据，GUI 不解析内容） |
+| `input disable` / `input enable` | 脚本区输入控制节点；块语法对应包裹节点，对称写法对应独立节点 |
+| `modal show/hide` | 脚本区模态框节点；`as result` 显示返回值变量名 |
 
 ### 静态与动态修饰符
 
@@ -781,9 +857,26 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 动词 [子命令] [位置参数...] (具名参数...)
 ```
 
-**位置参数**按固定顺序省略键名，用于高频场景的简洁写法；**具名参数**在括号内以 `key=value` 形式提供，用于不常用或顺序不明确的参数。两者可混用。括号内无 `=` 的裸关键字视为布尔 flag（如 `loop`、`nowait`）。
+**位置参数**按固定顺序省略键名，用于高频场景的简洁写法；**具名参数**在括号内以 `key=value` 形式提供，用于不常用或顺序不明确的参数。两者可混用。括号内无 `=` 的裸关键字视为布尔 flag（如 `loop`、`nowait`、`async`）。
 
-**各指令位置参数顺序**：
+**位置参数填充规则**：位置参数必须从第一个开始**连续**提供，中间不能跳过。需要跳过任何一个位置参数时，该参数及之后的所有参数改用具名参数。
+
+```apy
+camera move 1.2 0.5          # zoom + duration，连续，OK
+camera move (duration=0.5)   # 只要 duration，跳过 zoom，改具名，OK
+camera move 1.2 (angle=15.0) # zoom 用位置，跳过 duration 改具名，OK
+camera move _ 0.5            # 错误：不支持占位符，改用具名写法
+```
+
+**`show` 位置约束**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=` 传入，与 duration（数字类型）不产生歧义。
+
+```apy
+show eileen left 0.3                 # 关键字位置 + duration
+show eileen (pos=(100, 200))         # 数值坐标，具名参数
+show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
+```
+
+**子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
 
 | 指令 | 位置参数顺序 | 保留具名参数 |
 |------|------------|------------|
@@ -792,10 +885,24 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 | `scene` | 路径 → duration | `with` |
 | `clear` | — | `with` |
 | `play music/sound/voice/ambient` | 路径 → volume → fadein → fadeout | `loop` |
+| `play video` | 路径 → volume | `layer` `loop` `async` `blocking` |
 | `stop music/sound/voice/ambient` | fadeout | — |
+| `stop video` | fadeout | — |
+| `pause music/sound/video` | fadeout | — |
+| `resume music/sound/video` | fadein | — |
+| `say` | 角色或 `narrator` → 文本 | 与对话行修饰符一致 |
+| `choice` | 选项列表变量 | `timeout` `default` |
 | `camera move` | zoom → duration → angle | `offset` `easing` |
 | `camera shake` | intensity → duration | `frequency` |
 | `camera reset` | duration | — |
+| `camera follow` | 角色或 `none` | `lag` |
+| `layer create` | 层名 | `above` `below` |
+| `layer destroy` | 层名 | — |
+| `layer order` | 层名序列（从下到上） | — |
+| `input disable` | — | flag 列表：`skip` `rollback` `all` |
+| `input enable` | — | — |
+| `modal show` | UI 控件路径 | — |
+| `modal hide` | — | — |
 | `call animation` | 名称 | — |
 | `parallel` | — | `wait` |
 | `include` | 路径 | — |
@@ -805,7 +912,9 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 | `on enter` | label 名 | — |
 | `on key` | 键名字符串 | — |
 
-**子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound`）。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。
+**子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
+
+**各指令位置参数顺序**：
 
 ### 关键设计决策
 
@@ -868,6 +977,26 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 **`assert`**：语义与 Python `assert` 完全一致，引擎在编译期识别并在 release 模式下剥离。右值允许任意 Python 表达式，消息部分允许 f-string。GUI 以灰色标记表示"此节点在 release 下不存在"。
 
 **`on` 块作用域**：强制顶层定义，不允许出现在 `label` 或任何块内。GUI 在独立事件钩子面板中展示，与脚本流程图完全分离。块内 Python 代码按常规规则降级为代码节点。`on change` 暂不支持，响应式语义对 `store` 代理的实现成本与 GUI 追踪复杂度不值得现阶段引入。
+
+**位置参数连续填充规则**：位置参数必须从第一个开始连续提供，跳过任何一个则之后全部改具名参数。不支持占位符语法（`_`）。规则全局统一，适用于所有指令，用户学一条规则即可推导所有指令行为。
+
+**`show` 位置与坐标扩展**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=(x, y)` 传入。两者类型不同（关键字 vs 数字），解析器无歧义。此约束显式锁定，不允许在位置参数位置传入数值坐标。
+
+**`pause` / `resume`**：独立动词，不是 `play` / `stop` 的子命令。语义区别：`stop` 停止并丢弃进度，`pause` 保留进度暂停，`resume` 从保留位置恢复。适用于 `music`、`sound`、`video`，子命令语法与 `play` / `stop` 对称。`pause` 接受 `fadeout` 位置参数（画面/音量渐暗），`resume` 接受 `fadein` 位置参数。
+
+**`play video` 默认阻塞**：与 `play music`（默认非阻塞）相反，`play video` 默认阻塞执行流，播完后才推进。非阻塞时显式加 `(async)`。理由：视频大多数时候是过场动画，播完才推进是高频用法；背景循环视频是少数场景，需要显式声明意图。`(blocking)` 关键字保留但冗余，不推荐写。
+
+**`say` 动词**：`@`（旁白）和 `角色:` 都是 `say` 的语法糖，底层统一为 `say <角色或narrator> <文本> (修饰符)`。`say` 的存在价值是支持动态说话者——角色变量在运行时求值，`@` 和 `角色:` 无法表达此场景。修饰符与对话行修饰符完全一致。
+
+**`choice` 动词**：`menu` 是静态声明语义，选项在编译期确定，GUI 完整解析为菜单节点。`choice` 专门处理动态场景，接受运行时生成的选项列表（`list[dict]`），整体作为代码节点处理，GUI 不尝试解析列表内容。两者定位不重叠，`choice` 不是 `menu` 的超集。
+
+**`input disable` 两种形式**：对称写法（`input disable` / `input enable`）和块语法（`input disable: ...`）均支持，两者语义等价。块语法是推荐写法——引擎保证块结束后自动恢复，即使块内发生 `jump` 或异常也能正确还原输入状态，无需手动配对 `enable`。对称写法保留，适合跨 label 的长期禁用场景。`input disable` 支持细粒度 flag 列表（`skip`、`rollback`、`all`），无参数时等价于 `(all)`。
+
+**`modal` 焦点模型**：`modal show` 激活时，引擎自动屏蔽底层场景输入（等价于 `input disable (all)`）、将焦点锁定到模态框内控件，模态框关闭时自动恢复，无需手动管理。`modal show ... as result` 阻塞执行流，等用户在模态框内做出选择后将结果写入 `result` 变量再推进。`modal` 与 `input disable` 的区别：`input disable` 用于演出期间屏蔽输入（无返回值、不转移焦点），`modal` 用于 UI 交互等待用户选择（有返回值、转移焦点）。
+
+**`camera follow`**：`camera` 的新子命令，与 `move` / `shake` / `reset` 平级。`camera follow none` 取消跟随，恢复静止镜头。`lag` 参数控制跟随延迟（秒），值越大镜头越"懒"，0 为即时跟随。`camera follow` 与 `camera move` 可共存——`follow` 设定跟随目标，`move` 在此基础上叠加偏移。
+
+**`layer` 管理**：`layer` 作为独立动词，子命令 `create` / `destroy` / `order`。`create` 的 `above` / `below` 具名参数指定新层相对于已有层的位置；`order` 接受层名序列（从下到上），一次性重排所有层顺序。层的创建和销毁在引擎启动时静态检查，运行时销毁非空层时输出警告。
 
 ---
 
