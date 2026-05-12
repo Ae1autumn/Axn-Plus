@@ -29,8 +29,8 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 **新脚本格式 `.apy`**
 自研脚本格式，语法简洁度对标 Ren'Py 的 `.rpy`，但与 Python 更自然地融合，消除上下文切换的割裂感。同时原生支持纯代码工作流，`.apy` 不是必须的。
 
-**可插拔 UI 后端**
-引擎核心与渲染层解耦，初期支持 Pygame 和 PySide（Qt）。UI 描述保持后端中立，通过引擎提供的抽象类实现，不暴露任何后端特定概念。
+**项目级 UI 后端绑定**
+引擎核心与渲染层解耦，初期支持 Pygame 和 PySide（Qt）两套后端。后端在项目初始化时选定，之后固定不变——这是项目配置决策，不是运行时动态切换。两套后端对应不同的 UI 子系统，定位和目标用户不同，详见 UI 系统章节。
 
 ---
 
@@ -1306,6 +1306,415 @@ class QuestState(Saveable):
 AxnSaveError: Object of type 'QuestState' is not saveable.
 Declare it with @saveable or inherit from Saveable.
 ```
+
+---
+
+## UI 系统
+
+### 三套子系统
+
+Axn-Plus 的 UI 系统按后端分为两条路线，Pygame 后端下细分为两个层级：
+
+| 关键字 | 后端 | 定位 | 目标用户 |
+|--------|------|------|----------|
+| `screen` | Pygame | 顶层窗口容器，定义完整 UI 画面 | 轻量项目，Ren'Py 迁移用户 |
+| `gui` | Pygame | 精细控件，可复用，可定义模板 | 需要复杂控件或自定义绘制的项目 |
+| `window` | Qt | 声明式控件体系，包一层抽象 | 需要原生级复杂 UI 的项目 |
+
+**后端在项目初始化时选定，之后固定。** Pygame 项目使用 `screen` + `gui`，Qt 项目使用 `window`，两套路线不混用。
+
+---
+
+### `screen`（Pygame 顶层容器）
+
+`screen` 定义一个完整的 UI 画面，对标 Ren'Py 的 screen 语法，参考其设计但不照搬。绝对定位完全可用，同时扩展了相对定位能力。
+
+```apy
+screen hud:
+    pin top_right:
+        text "00:30"
+    pin bottom center:
+        dialogue_box
+```
+
+---
+
+### `gui`（Pygame 精细控件）
+
+`gui` 定义可复用的控件组件，默认在 `ui` 层，可通过 `layer=` 指定其他层。层级决定持久性——跟层走，不跟控件走。
+
+```apy
+gui health_bar(value, max_value, color=#ff0000):
+    size (200, 20)
+    background #333333
+    fill:
+        width value / max_value * 200
+        color color
+    text "{value}/{max_value}":
+        anchor right
+        font_size 12
+```
+
+**`gui` 可以放在非 `ui` 层：**
+
+```apy
+gui effect_overlay:
+    layer effect        # 跟随场景，scene切换时清除
+
+gui hud:                # 默认ui层，持久
+    ...
+```
+
+**`screen` 和 `gui` 可以互相嵌套：**
+
+```apy
+screen hud:
+    health_bar(80, 100)             # 在screen内调用gui控件
+    health_bar(60, 100, color=#0000ff)
+```
+
+#### 控件定义语法
+
+直接使用函数签名风格，和 `label` 保持一致：
+
+```apy
+gui base_button(label, width=120):
+    size (width, 40)
+    background #444444
+    text label:
+        anchor center
+
+gui confirm_button(label) extends base_button:
+    background #226622    # 覆盖父控件属性
+    # size 和 text 继承 base_button
+```
+
+#### Python 逃逸
+
+`gui` 块内可直接写 Python/Pygame 代码，Python 块拿到的是控件自己的局部 surface，坐标从 `(0, 0)` 开始：
+
+```apy
+gui custom_widget(color):
+    size (100, 100)
+    background #333333
+    python:
+        pygame.draw.circle(surface, color, (50, 50), 30)
+        pygame.draw.line(surface, (255, 255, 255), (0, 0), (100, 100), 2)
+```
+
+---
+
+### 布局能力
+
+绝对定位（Ren'Py 风格）完全可用。在此基础上扩展了语义化相对定位：
+
+#### 堆叠（`stack`）
+
+```apy
+stack vertical gap=8:
+    button "选项一"
+    button "选项二"
+
+stack horizontal gap=4 wrap:
+    tag "标签一"
+    tag "标签二"
+    tag "标签三"
+```
+
+#### 锚定（`pin`）
+
+```apy
+gui hud:
+    pin top_right:
+        text "00:30"
+    pin bottom center:
+        dialogue_box
+    pin (0.3, 0.7):
+        inventory_icon
+```
+
+#### 跟随（`follow`）
+
+```apy
+gui tooltip(text):
+    follow mouse offset=(10, 10):
+        panel:
+            text text
+
+gui damage_number(value):
+    follow eileen offset=(0, -20):
+        text value
+```
+
+#### 填充（`grow`）
+
+```apy
+gui sidebar:
+    size (200, fill)
+
+    stack vertical:
+        header_area
+        content_area grow:
+            ...
+        footer_area
+```
+
+#### 分割（`split`）
+
+```apy
+gui layout:
+    split horizontal ratio=(1, 2, 1):
+        left_panel
+        main_panel
+        right_panel
+```
+
+#### 尺寸约束
+
+```apy
+gui dialog_box:
+    size (clamp(300, auto, 600), auto)
+    size (fill, auto)
+    min_size (200, 100)
+    max_size (600, none)
+```
+
+---
+
+### 扩展特性
+
+以下特性是对 Ren'Py screen 系统的设计补全，覆盖 Ren'Py 的核心缺失：
+
+#### 1. 控件局部状态
+
+控件内部状态不污染全局 `store`：
+
+```apy
+gui collapsible(title):
+    state expanded = False
+
+    button title:
+        on_click: expanded = not expanded
+
+    if expanded:
+        stack vertical:
+            slot children
+```
+
+#### 2. 控件间事件系统
+
+控件之间通过 `emit` / `on_event` 通信，与顶层 `on enter` / `on key` 钩子命名不冲突：
+
+```apy
+gui tab_bar(tabs):
+    state active = tabs[0]
+
+    stack horizontal:
+        for tab in tabs:
+            button tab:
+                on_click: emit("tab_changed", tab)
+
+gui tab_content:
+    on_event "tab_changed": (tab):
+        show_content(tab)
+```
+
+事件作用域：`emit` 向父容器冒泡，不广播到全局。需要跨控件树通信时退回 `store`。
+
+#### 3. 控件过渡动画
+
+复用现有 `transform` 语法，不引入新机制：
+
+```apy
+gui notification(text):
+    appear: transform slide_in_top 0.3
+    disappear: transform fade_out 0.2
+
+    panel:
+        text text
+```
+
+#### 4. 响应式尺寸
+
+见布局能力中的尺寸约束部分（`clamp`、`fill`、`auto`）。
+
+#### 5. children 插槽
+
+```apy
+gui card(title):
+    panel:
+        text title:
+            font_size 18
+        divider
+        slot children
+
+# 使用时
+card("今日任务"):
+    text "完成剧情A"
+    text "解锁CG"
+    button "查看详情"
+```
+
+#### 6. 焦点管理
+
+支持键盘导航和手柄支持：
+
+```apy
+gui menu_panel:
+    focus_group "main_menu"
+    focus_default confirm_btn
+    focus_order (option_a, option_b, option_c, confirm_btn)
+
+    button "确认" as confirm_btn:
+        on_focus: ...
+        on_blur: ...
+```
+
+#### 7. 条件样式
+
+根据状态动态改变样式，不需要 if/else 切换整个控件：
+
+```apy
+gui option_button(label, selected):
+    background #444444
+    when selected:
+        background #226622
+        border (2, #ffffff)
+    when hovered:
+        background #555555
+    when focused:
+        border (2, #aaaaff)
+```
+
+#### 8. 滚动容器
+
+```apy
+gui scroll_panel:
+    scroll vertical:
+        momentum True
+        scrollbar (width=4, color=#ffffff44)
+        overscroll bounce
+        stack vertical gap=8:
+            ...
+```
+
+#### 9. 控件级 z_order
+
+控件内部的层叠顺序，与场景层系统不冲突：
+
+```apy
+gui dropdown(options):
+    button "选择":
+        on_click: toggle expanded
+
+    if expanded:
+        stack vertical:
+            z_order 100
+            for opt in options:
+                button opt
+```
+
+#### 10. overflow 与裁剪控制
+
+```apy
+gui avatar_frame:
+    size (64, 64)
+    overflow clip
+    border_radius 32
+    image portrait
+
+gui text_preview:
+    size (300, 60)
+    overflow hidden
+    text long_content
+
+gui scroll_area:
+    size (300, 200)
+    overflow scroll
+    text very_long_content
+```
+
+`overflow` 三种值：
+
+| 值 | 行为 |
+|---|---|
+| `clip` | 裁剪超出部分，支持 `border_radius` 定义裁剪形状 |
+| `hidden` | 隐藏溢出内容，无滚动条 |
+| `scroll` | 溢出时自动出现滚动条 |
+
+---
+
+### `window`（Qt 后端）
+
+`window` 使用声明式语法，包一层抽象屏蔽 Qt 概念，足够简单。复用 `template` / `extends` 进行组件继承：
+
+```apy
+# ui/base.apy
+template BaseBox:
+    background "ui/box_default.png"
+    font "fonts/default.ttf"
+    padding (20, 10)
+    text_color #ffffff
+```
+
+```apy
+# ui/eileen_box.apy
+import "ui/base.apy"
+
+EileenBox extends BaseBox:
+    background "ui/box_eileen.png"
+    name_color #ff8800
+    font "fonts/handwriting.ttf"
+```
+
+`window` 的 `template` / `extends` 与 `gui` 的继承语义不同：
+
+| | `gui extends` | `window template/extends` |
+|---|---|---|
+| 后端 | Pygame | Qt |
+| 参数化 | 支持，函数签名风格 | 不支持 |
+| 继承 | 属性覆盖 + 参数继承 | 属性覆盖 |
+| 实例化 | 直接调用 `health_bar(80, 100)` | 引用路径 `"ui/x.apy::X"` |
+
+---
+
+### 关键设计决策（UI 系统）
+
+**后端绑定**：后端在项目初始化时选定，之后固定。Pygame 项目使用 `screen` + `gui`，Qt 项目使用 `window`，不混用。
+
+**`screen` 与 `gui` 的职责边界**：`screen` 是顶层画面容器，层级固定；`gui` 是控件，可放在任意层。两者可互相嵌套，混用合法。
+
+**持久性跟层走**：`gui` 控件放在哪一层，就遵守那一层的持久性规则。`clear` 不清除 `ui` 层（持久），但会清除 `effect` / `sprite` 层上的 `gui` 控件。需要持久但不在 `ui` 层时，显式声明 `persistent`。
+
+**Python 逃逸的 surface 作用域**：`gui` 块内 Python 块拿到的是控件局部 surface，坐标从 `(0, 0)` 开始，引擎负责合成到正确位置。保证控件封装性，不暴露全局 surface。
+
+**事件作用域**：`emit` 向父容器冒泡，不广播到全局。`on_event` 与顶层 `on enter` / `on key` 使用不同关键字，无命名冲突。
+
+**`when` 条件样式**：只允许引擎预定义的状态关键字（`selected`、`hovered`、`focused`、`disabled`、`pressed`），不允许任意 Python 表达式，保证 GUI 编辑器可完整解析。复杂条件样式退回 `if` 块或 Python。
+
+**布局关键字语义化**：关键字描述意图（`pin`、`stack`、`grow`、`split`），不描述实现，不照搬前端术语。绝对定位（Ren'Py 风格）永远可用作退路。
+
+---
+
+### Round-Trip Fidelity 补充（UI 系统）
+
+| 新增语法 | GUI 处理方式 |
+|----------|-------------|
+| `screen` | 编辑器顶层画面容器节点 |
+| `gui` 定义 | 编辑器控件模板库，参数列表完整可解析 |
+| `gui extends` | 控件继承树，继承字段以灰色标注来源 |
+| `stack` / `pin` / `follow` / `split` | 布局积木块，对应可视化布局编辑器 |
+| `grow` / `fill` / `auto` / `clamp` | 尺寸约束字段，编辑器内联编辑 |
+| `state` 局部状态 | 控件节点内的状态变量面板 |
+| `emit` / `on_event` | 事件连线，编辑器以箭头表示事件流向 |
+| `appear` / `disappear` | 控件过渡动画字段，复用 transform 编辑器 |
+| `slot children` | 编辑器显示插槽占位符，调用方可拖入子控件 |
+| `focus_group` / `focus_order` | 焦点管理面板，独立于布局展示 |
+| `when` 条件样式 | 样式编辑器内的条件分支，与普通样式字段并列 |
+| `scroll` 容器 | 滚动容器积木块，scrollbar 样式独立编辑 |
+| `z_order` | 控件层叠顺序字段 |
+| `overflow` + `border_radius` | 溢出控制字段，clip 模式下裁剪形状可视化编辑 |
+| `window` / `template` / `extends` | 窗口区组件继承树（与 Pygame 路线完全分离） |
 
 ---
 
