@@ -1327,7 +1327,9 @@ Axn-Plus 的 UI 系统按后端分为两条路线，Pygame 后端下细分为两
 
 ### `screen`（Pygame 顶层容器）
 
-`screen` 定义一个完整的 UI 画面，对标 Ren'Py 的 screen 语法，参考其设计但不照搬。绝对定位完全可用，同时扩展了相对定位能力。
+`screen` 定义一个完整的 UI 画面，职责是**布局**——把控件组合成完整的 UI 画面。`gui` 负责控件的定义和复用，`screen` 负责把这些控件组织到一起。
+
+绝对定位完全可用，同时扩展了语义化相对定位能力。
 
 ```apy
 screen hud:
@@ -1337,11 +1339,49 @@ screen hud:
         dialogue_box
 ```
 
+#### `use`：screen 嵌套 screen
+
+`use` 用于在一个 `screen` 内嵌入另一个 `screen`，支持传参：
+
+```apy
+screen common_header(title):
+    text title:
+        anchor top_center
+        font_size 24
+
+screen pause_menu:
+    use common_header(title="暂停")
+    button "继续" on_click: jump resume_game
+    button "存档" on_click: jump save_menu
+```
+
+**`use` 只用于 screen 嵌套 screen。** `gui` 控件用直接调用语法，不用 `use`：
+
+```apy
+screen hud:
+    health_bar(80, 100)             # gui 控件直接调用，不需要 use
+    use common_header(title="HUD")  # screen 嵌套，必须 use
+```
+
+有插槽填充时必须写 `use`；无插槽填充时 `use` 可省略（直接调用同名 screen）：
+
+```apy
+# 有插槽，必须写 use
+use base_dialog(title="设置"):
+    slot body:
+        toggle "音效"
+    slot footer:
+        button "确认" on_click: Return()
+
+# 无插槽，use 可省略
+pause_menu()    # 等价于 use pause_menu()
+```
+
 ---
 
 ### `gui`（Pygame 精细控件）
 
-`gui` 定义可复用的控件组件，默认在 `ui` 层，可通过 `layer=` 指定其他层。层级决定持久性——跟层走，不跟控件走。
+`gui` 定义可复用的控件组件，职责是**控件的封装与复用**。默认在 `ui` 层，可通过 `layer=` 指定其他层。层级决定持久性——跟层走，不跟控件走。
 
 ```apy
 gui health_bar(value, max_value, color=#ff0000):
@@ -1359,9 +1399,9 @@ gui health_bar(value, max_value, color=#ff0000):
 
 ```apy
 gui effect_overlay:
-    layer effect        # 跟随场景，scene切换时清除
+    layer effect        # 跟随场景，scene 切换时清除
 
-gui hud:                # 默认ui层，持久
+gui hud:                # 默认 ui 层，持久
     ...
 ```
 
@@ -1369,7 +1409,7 @@ gui hud:                # 默认ui层，持久
 
 ```apy
 screen hud:
-    health_bar(80, 100)             # 在screen内调用gui控件
+    health_bar(80, 100)             # 在 screen 内调用 gui 控件
     health_bar(60, 100, color=#0000ff)
 ```
 
@@ -1388,6 +1428,90 @@ gui confirm_button(label) extends base_button:
     background #226622    # 覆盖父控件属性
     # size 和 text 继承 base_button
 ```
+
+#### 简写语法
+
+以下简写在不产生歧义的前提下减少代码量，完整写法始终有效。
+
+**`style` 块：集中声明样式**
+
+把样式属性从控件结构里剥离，状态样式在 `style` 块内以状态名作为缩进键，省略 `when` 关键字：
+
+```apy
+# 完整写法（始终有效）
+gui option_button(label):
+    size (200, 40)
+    background #444444
+    when hovered:
+        background #555555
+    when selected:
+        background #226622
+    text label
+
+# style 块简写
+gui option_button(label):
+    style:
+        size (200, 40)
+        background #444444
+        hovered:  background #555555
+        selected: background #226622
+    text label
+```
+
+**单行事件处理**
+
+`on_click` 等事件处理器只有单个表达式时，允许内联到控件声明行：
+
+```apy
+# 完整写法
+button "确认":
+    on_click:
+        $ save_game()
+
+# 单行简写
+button "确认" on_click: save_game()
+
+# 多行退回完整块（规则与 .apy 其他地方一致：冒号后有内容单行，冒号后为空展开块）
+button "确认":
+    on_click:
+        $ save_game()
+        $ emit "saved"
+```
+
+**属性内联括号**
+
+叶子控件（无子结构）的属性可以内联到声明行，用具名参数语法，与 `.apy` 指令语法完全一致：
+
+```apy
+# 完整写法
+text label:
+    font_size 18
+    color #ffffff
+    anchor center
+
+# 内联简写（仅限叶子控件，有子结构时必须展开块）
+text label (font_size=18, color=#ffffff, anchor=center)
+```
+
+**`vstack` / `hstack` 方向简写**
+
+```apy
+# 完整写法
+stack vertical gap=8:
+    button "A"
+    button "B"
+
+# 简写
+vstack gap=8:
+    button "A"
+    button "B"
+
+hstack gap=4:
+    icon "a.png"
+    text "标签"
+```
+
+`vstack` / `hstack` 是 `stack vertical` / `stack horizontal` 的别名，无额外语义。
 
 #### Python 逃逸
 
@@ -1481,6 +1605,95 @@ gui dialog_box:
 
 ---
 
+### 插槽系统（`slot`）
+
+插槽允许 `screen` 和 `gui` 声明内容空位，由调用方填入，实现模板骨架与内容的分离。
+
+#### 具名插槽
+
+`screen` 和 `gui` 均支持声明多个具名 `slot`，调用方用 `slot 名称:` 块填充：
+
+```apy
+# 定义带具名插槽的骨架 screen
+screen base_dialog(title):
+    background "ui/panel_bg.png"
+    padding (20, 20)
+    stack vertical gap=12:
+        text title:
+            font_size 20
+        divider
+        slot body           # 主内容区
+        slot footer         # 底部按钮区（可选）
+
+# 填充插槽（有插槽填充时必须写 use）
+use base_dialog(title="道具栏"):
+    slot body:
+        inventory_grid(items)
+    slot footer:
+        button "关闭" on_click: hide screen inventory
+```
+
+**未填充的 `slot` 直接不渲染**，不报错——让可选区域零成本省略。
+
+#### 插槽默认内容
+
+`slot` 支持声明默认内容，调用方不填时自动使用：
+
+```apy
+screen base_dialog(title):
+    stack vertical:
+        slot header:
+            default:
+                text title (font_size=18)
+        slot body
+        slot footer:
+            default:
+                button "确认" on_click: Return()
+```
+
+#### `gui` 的具名插槽
+
+`gui` 控件同样支持具名插槽，调用时用块语法填充：
+
+```apy
+gui card(title):
+    panel:
+        text title (font_size=18)
+        divider
+        slot content
+        slot badge          # 右上角徽章区（可选）
+
+# 调用时填充
+card(title="今日任务"):
+    slot content:
+        text "完成剧情A"
+        text "解锁CG"
+    slot badge:
+        icon "new_badge.png"
+```
+
+`slot children` 作为匿名插槽的语法糖保留，等价于声明一个名为 `children` 的具名插槽：
+
+```apy
+gui simple_card(title):
+    panel:
+        text title
+        slot children       # 匿名插槽，调用方直接在块内写子控件
+
+# 使用时
+simple_card("任务"):
+    text "完成剧情A"
+    button "查看详情"
+```
+
+#### 插槽边界规则
+
+- **`slot` 不支持嵌套透传**：不允许将外层 `slot` 透传给内层 `screen` 或 `gui`，需要多层组合时用 `extends` 或拆成独立定义。规则简单，插槽来源可追踪。
+- **`slot` 只能声明在 `screen` 和 `gui` 定义块内**，不允许出现在 `label` 或普通 `.apy` 脚本流程中。
+- 同一控件内 `slot` 名称不可重复，引擎启动时检查并报错。
+
+---
+
 ### 扩展特性
 
 以下特性是对 Ren'Py screen 系统的设计补全，覆盖 Ren'Py 的核心缺失：
@@ -1493,33 +1706,55 @@ gui dialog_box:
 gui collapsible(title):
     state expanded = False
 
-    button title:
-        on_click: expanded = not expanded
+    button title on_click: expanded = not expanded
 
     if expanded:
-        stack vertical:
+        vstack:
             slot children
 ```
 
+**`state` 生命周期规则：**
+
+1. 每个控件**实例**拥有独立的 `state` 副本——同一 `gui` 实例化两次，两份 `state` 互不影响
+2. 控件销毁（所在 `screen` 关闭）时 `state` 丢弃，不持久化
+3. `state` 不写入 `store`，两者完全隔离——需要持久化时开发者显式用 `store`
+
 #### 2. 控件间事件系统
 
-控件之间通过 `emit` / `on_event` 通信，与顶层 `on enter` / `on key` 钩子命名不冲突：
+控件之间通过 `emit` / `on_event` 通信，与顶层 `on enter` / `on key` 钩子命名不冲突。
+
+**默认冒泡**：`emit` 向父容器冒泡，适合父子控件间通信：
 
 ```apy
 gui tab_bar(tabs):
     state active = tabs[0]
 
-    stack horizontal:
+    hstack:
         for tab in tabs:
-            button tab:
-                on_click: emit("tab_changed", tab)
+            button tab on_click: emit("tab_changed", tab)
 
 gui tab_content:
     on_event "tab_changed": (tab):
         show_content(tab)
 ```
 
-事件作用域：`emit` 向父容器冒泡，不广播到全局。需要跨控件树通信时退回 `store`。
+**具名频道**：需要跨控件树通信时，使用具名频道，不通过 `store` 中转：
+
+```apy
+# 发送到具名频道
+button "切换主题" on_click: emit channel="global" "theme_changed" "dark"
+
+# 任意位置订阅（不依赖树结构）
+gui theme_preview:
+    on_event channel="global" "theme_changed": (theme):
+        $ apply_theme(theme)
+```
+
+不写 `channel` 时默认冒泡行为不变；写 `channel` 时广播到所有订阅该频道的控件，不受树结构限制。
+
+**事件作用域规则**：
+- 无 `channel`：向父容器冒泡，不广播到全局
+- 有 `channel`：广播到所有订阅该频道的 `on_event`，不冒泡
 
 #### 3. 控件过渡动画
 
@@ -1572,19 +1807,50 @@ gui menu_panel:
 
 #### 7. 条件样式
 
-根据状态动态改变样式，不需要 if/else 切换整个控件：
+根据状态动态改变样式，不需要 if/else 切换整个控件。
+
+**预定义状态关键字**（`selected`、`hovered`、`focused`、`disabled`、`pressed`）直接用状态名：
 
 ```apy
-gui option_button(label, selected):
-    background #444444
-    when selected:
-        background #226622
-        border (2, #ffffff)
-    when hovered:
-        background #555555
-    when focused:
-        border (2, #aaaaff)
+gui option_button(label):
+    style:
+        background #444444
+        hovered:  background #555555
+        selected: background #226622
+        focused:  border (2, #aaaaff)
+        disabled: background #222222
 ```
+
+**`state` 变量绑定**：`when` 支持绑定 `state` 局部变量的简单比较（`==`、`!=`、`>`、`<`），GUI 完整可解析：
+
+```apy
+gui affection_bar(value):
+    state level = "low"
+
+    python:
+        level = "high" if value >= 80 else "mid" if value >= 40 else "low"
+
+    fill:
+        width value / 100 * 200
+        when level == "high": color #ff8800
+        when level == "mid":  color #aaaaff
+        when level == "low":  color #444444
+```
+
+**`bind`：`selected` 状态自动绑定**
+
+把控件的 `selected` 状态绑定到一个 `store` 或 `state` 变量，无需手动维护：
+
+```apy
+gui toggle_button(label, key):
+    bind store[key]                 # selected 状态自动跟随 store[key] 的布尔值
+    style:
+        background #444444
+        selected: background #226622
+    button label on_click: store[key] = not store[key]
+```
+
+`when` 允许的表达式限制：预定义状态关键字 **或** `state` / `store` 变量的简单比较。不允许任意 Python 表达式，保证 GUI 编辑器完整可解析。复杂条件退回 `if` 块或 Python。
 
 #### 8. 滚动容器
 
@@ -1644,6 +1910,218 @@ gui scroll_area:
 
 ---
 
+### 样式系统
+
+Axn-Plus 的样式系统分为四个层级，职责不重叠，可以叠加使用：
+
+| 层级 | 关键字 | 解决什么 | 粒度 |
+|------|--------|----------|------|
+| 设计 token | `theme` | 全局色彩/字体/间距，统一视觉语言 | 项目级 |
+| 样式片段 | `mixin` | 跨控件复用的样式块，手动 apply | 片段级 |
+| 全局具名样式 | `style` | 参与自动推导，零配置拾取 | 控件类级 |
+| 控件继承 | `extends` | 同类控件的结构+属性整体继承 | 控件级 |
+
+#### 第一层：`theme`（设计 token）
+
+全局设计 token，一处定义，全局生效：
+
+```apy
+theme default:
+    # 颜色
+    color.primary    #ff8800
+    color.surface    #2a2a2a
+    color.danger     #cc2222
+    color.text       #ffffff
+    color.muted      #888888
+
+    # 字体
+    font.default     "fonts/default.ttf"
+    font.heading     "fonts/bold.ttf"
+    font.size.base   16
+    font.size.small  12
+    font.size.large  24
+
+    # 间距
+    spacing.sm  8
+    spacing.md  16
+    spacing.lg  24
+
+    # 圆角
+    radius.sm   4
+    radius.md   8
+```
+
+控件内用 `$token` 引用：
+
+```apy
+gui base_button(label):
+    style:
+        background $color.surface
+        border_radius $radius.md
+    text label (color=$color.text, font=$font.default)
+```
+
+**多主题**：
+
+```apy
+theme default:
+    color.primary #ff8800
+    color.surface #2a2a2a
+
+theme dark:
+    color.primary #ffaa00
+    color.surface #1a1a1a
+```
+
+运行时切换：
+
+```apy
+$ engine.set_theme("dark")
+```
+
+#### 第二层：`mixin`（样式片段）
+
+可复用的样式块，通过 `apply` 手动引入，不参与自动推导：
+
+```apy
+mixin interactive:
+    hovered:  background #555555
+    pressed:  background #333333
+    disabled: background #1a1a1a
+
+mixin danger_style:
+    background $color.danger
+    hovered: background #ff3333
+    border (1, #ff0000)
+```
+
+**参数化 `mixin`**：支持函数签名风格，提升复用灵活度：
+
+```apy
+mixin colored_border(color, width=2):
+    border (width, color)
+    hovered: border (width, color)
+
+gui special_button(label) extends base_button:
+    apply colored_border($color.primary)
+    apply colored_border(#ff0000, width=3)
+```
+
+**`apply` 覆盖规则**：控件自身声明的属性优先级高于 `mixin`，多个 `mixin` 时后写的优先级高：
+
+```apy
+gui special_button(label) extends base_button:
+    apply danger_style
+    apply large_style       # 冲突属性取 large_style
+    background #333333      # 自身声明，最终优先
+```
+
+#### 第三层：`style`（全局具名样式）
+
+借鉴 Ren'Py `style` 系统的自动推导能力。`style` 与 `mixin` 底层相同，区别在于：
+
+- `style` 参与自动推导，`mixin` 不参与
+- 两者都可以手动 `apply`
+- 语义上：`style` 是"这个控件类应该长什么样"，`mixin` 是"把这段样式混入进来"
+
+**自动推导命名规则**：
+
+| 命名格式 | 推导对象 |
+|----------|----------|
+| `控件名` | 控件基础样式 |
+| `控件名_状态` | 控件指定状态样式 |
+| `控件名_子元素` | 控件内指定子元素样式 |
+| `控件名_子元素_状态` | 子元素的指定状态样式 |
+
+```apy
+# 定义全局 style，按命名约定自动推导
+style button:
+    background $color.surface
+    border_radius $radius.md
+    size (160, 44)
+
+style button_hovered:
+    background #555555
+
+style button_text:
+    color $color.text
+    font_size $font.size.base
+    anchor center
+
+style button_text_hovered:
+    color $color.primary
+
+# 控件定义时，匹配命名约定的 style 自动生效，无需手动 apply
+gui button(label):
+    text label
+    # button、button_hovered、button_text、button_text_hovered 全部自动拾取
+```
+
+**自动推导规则**：只拾取自身名字匹配的 `style`，不沿 `extends` 继承链向上查找。需要父类样式时显式 `apply`。
+
+#### 优先级链
+
+```
+自身声明
+  > 手动 apply mixin（后 > 前）
+  > 自动推导 style
+  > extends 父类自身声明
+  > extends 父类 apply
+  > theme token 默认值
+```
+
+冲突时规则唯一，无歧义。引擎启动时对已知冲突输出警告。
+
+#### 完整示例
+
+```apy
+theme default:
+    color.primary  #ff8800
+    color.surface  #2a2a2a
+    color.danger   #cc2222
+    color.text     #ffffff
+    radius.md      8
+
+# 全局 style，参与自动推导
+style button:
+    background $color.surface
+    border_radius $radius.md
+    size (160, 44)
+
+style button_hovered:
+    background #555555
+
+style button_text:
+    color $color.text
+    font_size 16
+    anchor center
+
+# mixin，用于手动 apply
+mixin interactive:
+    hovered:  background #555555
+    pressed:  background #333333
+    disabled: background #1a1a1a
+
+mixin danger_style:
+    background $color.danger
+    hovered: background #ff3333
+
+# 控件定义
+gui base_button(label):
+    apply interactive           # 手动 apply，补充 pressed/disabled 状态
+    text label
+    # style button、button_text 自动推导生效
+
+gui confirm_button(label) extends base_button:
+    style:
+        background $color.primary   # 只覆盖背景色，其余继承
+
+gui delete_button(label) extends base_button:
+    apply danger_style              # 覆盖 interactive 的 hovered
+```
+
+---
+
 ### `window`（Qt 后端）
 
 `window` 使用声明式语法，包一层抽象屏蔽 Qt 概念，足够简单。复用 `template` / `extends` 进行组件继承：
@@ -1682,17 +2160,21 @@ EileenBox extends BaseBox:
 
 **后端绑定**：后端在项目初始化时选定，之后固定。Pygame 项目使用 `screen` + `gui`，Qt 项目使用 `window`，不混用。
 
-**`screen` 与 `gui` 的职责边界**：`screen` 是顶层画面容器，层级固定；`gui` 是控件，可放在任意层。两者可互相嵌套，混用合法。
+**`screen` 与 `gui` 的职责**：`screen` 负责布局——把控件组合成完整的 UI 画面；`gui` 负责控件的封装与复用。`use` 只用于 screen 嵌套 screen；`gui` 控件用直接调用语法。有插槽填充时必须写 `use`，无插槽填充时 `use` 可省略。
 
 **持久性跟层走**：`gui` 控件放在哪一层，就遵守那一层的持久性规则。`clear` 不清除 `ui` 层（持久），但会清除 `effect` / `sprite` 层上的 `gui` 控件。需要持久但不在 `ui` 层时，显式声明 `persistent`。
 
 **Python 逃逸的 surface 作用域**：`gui` 块内 Python 块拿到的是控件局部 surface，坐标从 `(0, 0)` 开始，引擎负责合成到正确位置。保证控件封装性，不暴露全局 surface。
 
-**事件作用域**：`emit` 向父容器冒泡，不广播到全局。`on_event` 与顶层 `on enter` / `on key` 使用不同关键字，无命名冲突。
+**布局关键字语义化**：关键字描述意图（`pin`、`stack`、`grow`、`split`、`vstack`、`hstack`），不描述实现，不照搬前端术语。绝对定位（Ren'Py 风格）永远可用作退路。
 
-**`when` 条件样式**：只允许引擎预定义的状态关键字（`selected`、`hovered`、`focused`、`disabled`、`pressed`），不允许任意 Python 表达式，保证 GUI 编辑器可完整解析。复杂条件样式退回 `if` 块或 Python。
+**插槽系统**：`screen` 和 `gui` 均支持具名 `slot` 声明。未填充的 `slot` 直接不渲染，不报错。`slot` 支持 `default:` 块声明默认内容。禁止 `slot` 嵌套透传，需要多层组合时用 `extends` 或拆成独立 screen。`slot children` 作为匿名插槽语法糖保留，多插槽场景用具名 `slot`。
 
-**布局关键字语义化**：关键字描述意图（`pin`、`stack`、`grow`、`split`），不描述实现，不照搬前端术语。绝对定位（Ren'Py 风格）永远可用作退路。
+**简写语法**：`style` 块集中声明样式（`when` 可省略，状态名直接作为缩进键）；单行事件处理（`on_click` 只有一个表达式时可内联）；属性内联括号（叶子控件用具名参数内联）；`vstack` / `hstack` 是 `stack vertical` / `stack horizontal` 的别名。完整写法始终有效，简写是语法糖。
+
+**样式系统四层优先级**：`自身声明 > 手动 apply mixin（后 > 前）> 自动推导 style > extends 父类自身声明 > extends 父类 apply > theme token 默认值`。`style` 参与自动推导（按 `控件名`、`控件名_状态`、`控件名_子元素`、`控件名_子元素_状态` 命名约定），`mixin` 不参与自动推导。自动推导只拾取自身名字匹配的 `style`，不沿 `extends` 继承链向上查找。`mixin` 支持参数化（函数签名风格）。冲突时规则唯一，引擎启动时对已知冲突输出警告。
+
+**具名频道事件**：`emit` 不写 `channel` 时向父容器冒泡；写 `channel` 时广播到所有订阅该频道的 `on_event`，不受控件树结构限制，不冒泡。两种模式不混用，规则无歧义。
 
 ---
 
@@ -1715,6 +2197,26 @@ EileenBox extends BaseBox:
 | `z_order` | 控件层叠顺序字段 |
 | `overflow` + `border_radius` | 溢出控制字段，clip 模式下裁剪形状可视化编辑 |
 | `window` / `template` / `extends` | 窗口区组件继承树（与 Pygame 路线完全分离） |
+| `use` screen 嵌套 | 编辑器显示嵌套 screen 引用节点，参数列表可编辑 |
+| `use` 省略（无插槽） | 编辑器等价处理为 `use`，无歧义 |
+| `slot` 具名插槽声明 | 骨架编辑器中显示具名插槽占位符，可拖入控件 |
+| `slot default:` | 占位符显示默认内容预览，调用方填充后覆盖 |
+| 未填充的可选 `slot` | 编辑器以虚线框显示，提示"可选，未填充" |
+| `style` 块简写 | 编辑器优先生成简写形式，完整 `when` 写法仍可解析 |
+| 单行 `on_click` 内联 | 编辑器优先生成单行形式 |
+| 属性内联括号 | 编辑器对叶子控件优先生成内联形式 |
+| `vstack` / `hstack` | 编辑器生成简写形式，与 `stack vertical/horizontal` 等价处理 |
+| `bind` | 控件节点样式面板显示绑定变量名，`selected` 状态标注"自动绑定" |
+| `when state变量` 条件样式 | 样式编辑器内的条件分支，变量来源标注 |
+| `theme` 块 | 独立主题编辑面板，token 列表完整可解析，色值显示色块预览 |
+| `$token` 引用 | 属性字段显示 token 名+当前值，点击跳转 theme 定义 |
+| 多主题切换 | 编辑器顶部主题选择器，实时预览切换效果 |
+| `mixin` 声明 | 样式库面板独立区域，与 `style` 分开展示 |
+| 参数化 `mixin` | 样式库面板显示参数列表，调用处显示实参值 |
+| `apply` | 控件节点上显示已应用的 mixin 列表，可拖拽排序调整优先级 |
+| `style` 全局具名样式 | 样式库面板独立区域，与 `mixin` 分开展示 |
+| 自动推导生效的 `style` | 控件节点样式面板显示"自动推导来源：style 名"，灰色标注 |
+| `emit channel=` 具名频道 | 编辑器以跨树箭头表示频道事件流向，与冒泡事件箭头视觉区分 |
 
 ---
 
