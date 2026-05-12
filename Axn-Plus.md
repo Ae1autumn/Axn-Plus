@@ -45,38 +45,6 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 | iOS | ❌ | 不支持运行时动态库注入 |
 | Web | ❌ | 环境本身无法运行 |
 
-**Android 动态库说明**：运行时注入指加载**打包在发行包内**的原生扩展（`.so`），不支持运行时从外部来源下载并执行。Android 10+ 的 W^X 策略禁止从可写目录执行原生代码，从外部下载的 `.so` 无法直接 `dlopen`，且从外部服务器动态下载执行 native 代码会触发 Play Store 审核拒绝。引擎提供 Android 专用的库加载 API（`engine.load_native(name)`），自动处理 APK assets → 应用私有目录 → `dlopen` 的完整路径，不暴露原始 `dlopen` 给用户。
-
----
-
-## Python 最低版本
-
-**要求 Python 3.11+。**
-
-理由：
-- CPython 3.11 引入了 `co_positions()`，提供每条字节码指令的列级位置信息（`line, end_line, col, end_col`），配合 `linecache` 注册 `.apy` 源码，可让标准 `traceback` 模块直接展示 `.apy` 源码行，无需自定义异常处理。
-- `code.replace(co_firstlineno=apy_line_offset)` 在 3.11 的新 `co_linetable` 格式下行号偏移更精确。
-- Python 3.10 已于 2026 年 10 月 EOL，锁定 3.11+ 无明显生态损失。
-- `match` 语句（3.10+）可直接使用。
-
-`.apy` 中 Python 块的编译方式：
-
-```python
-code = compile(
-    source,
-    filename="scene.apy",       # 显示在 traceback 里的文件名
-    mode="exec",
-)
-# 3.11+ 修正行号偏移
-code = code.replace(co_firstlineno=apy_line_offset)
-
-# 注册 .apy 源码到 linecache，使标准 traceback 可直接展示源码行
-import linecache
-def register_apy_source(filepath: str, source: str):
-    lines = source.splitlines(keepends=True)
-    linecache.cache[filepath] = (len(source), None, lines, filepath)
-```
-
 ---
 
 ## `.apy` 脚本格式
@@ -144,6 +112,24 @@ define eileen:
     dialogue_box "ui/eileen_box.apy::EileenBox"
 
 define char eileen:   # 显式声明，等价于上方写法，意图更清晰
+
+# 角色继承：子角色继承父角色所有字段，显式声明的字段覆盖父定义
+define char eileen_adult extends eileen:
+    sprites "assets/eileen_adult/"
+    voice_prefix "vo/eileen_adult/"
+    # 未声明字段全部继承：name、color、dialogue_box 等保持不变
+
+# layers 模型下的继承：同名动态层内按 key 合并，未声明的状态继承父定义
+define char eileen_casual extends eileen:
+    layers:
+        outfit:
+            casual "outfit_casual_v2.png"   # 只覆盖此状态
+            # school 继承父定义
+
+# 继承规则：
+# - 只允许单继承，不允许链式（A extends B extends C）
+# - 继承只发生在编译期展开，运行时 eileen_adult 与 eileen 是完全独立的对象
+# - show eileen_adult 和 show eileen 互不影响
 
 # 分层立绘：states 和 layers 二选一，不可混用
 # states：整图切换模型
@@ -406,6 +392,23 @@ menu:
         $ log_choice("ask")
         jump route_c
 
+# menu as：选完后继续执行流，选项 -> 右边是返回值表达式而非 label 名
+menu as answer:
+    "是"  -> "yes"
+    "否"  -> "no"
+
+eileen: "你选了 {answer}。"
+
+# menu as 展开块：选项有前置逻辑时用 -> 显式 return
+menu as answer:
+    "答应她":
+        $ log_choice("agree")
+        -> "yes"        # 块内显式返回值
+    "拒绝" -> "no"      # 简单场景仍用内联写法
+
+# menu as 内不允许 jump，混用时解析器报错
+# GUI 处理：menu as 对应独立的"菜单返回值"节点，与跳转型菜单节点分开
+
 # with char：连续对话锁定角色和默认修饰符
 # 块内裸字符串自动归属当前角色；行级修饰符按槽位覆盖块级默认值（表情槽、具名参数槽、Flag 槽各自独立）
 with eileen (happy):
@@ -422,6 +425,19 @@ narrate:
 
 # 跳转与调用
 jump route_a
+
+# 条件跳转短路写法：行末 if / unless 作为守卫条件，等价于 if 块但更轻量
+jump route_a if flag_agreed
+jump route_b if day >= 3
+call morning_scene() if day == 1
+return if flag_done
+
+# unless 对称写法（if not 的语法糖）
+jump prologue unless flag_met_eileen
+return unless flag_can_continue
+
+# 不支持 call ... as result if ...（条件不满足时返回值语义不明），退回 if 块处理
+# GUI 处理：条件跳转节点显示为带条件标签的跳转箭头，视觉权重轻于完整 if 块
 
 # call 不接返回值
 call morning_scene("happy")
@@ -504,16 +520,23 @@ call animation eileen_enter as anim   # 用 as 接句柄，配合 wait for 使�
 
 **并行轨道（parallel / track）**
 
+`parallel` 块内的 track 分两类，用显式标记区分：
+
+- **`(interactive)` 轨道**：允许对话行，独占用户输入，每次只能有一个。其他 track 在等待点击时继续运行。
+- **普通轨道**：不允许对话行，遇到时解析器报错，不静默通过。
+
 ```apy
 parallel:
-    track a:
+    track dialogue (interactive):   # 交互轨道，可以有对话行，独占输入
         show eileen left 0.5
-        wait 0.5
-        eileen: "……"
-    track b:
+        eileen: "……"                 # 正常等待点击
+        sophia: "是啊。"
+    track bgm:                      # 非交互轨道，只允许引擎指令
         play music "bgm/tense.ogg" 0.8 1.0
         camera shake 5 0.3
 ```
+
+同一 `parallel` 块只允许一个 interactive track，多个时解析器报错。
 
 `parallel` 块内的所有 `track` 并行执行，默认等所有 `track` 完成后推进（等价于 `wait for all`）。需要提前推进时：
 
@@ -524,6 +547,8 @@ parallel (wait=any):
     track b:
         ...
 ```
+
+`wait=any` 下，interactive track 未完成的对话会被打断——语义合法，但编辑器给出警告。
 
 `track` 可命名后用 `wait for` 精细控制：
 
@@ -538,7 +563,7 @@ parallel (wait=none):           # 不自动等待，手动控制
 wait for anim_scene             # 等 scene track 完成后推进
 ```
 
-`parallel` 块在 GUI 脚本区中表现为时间轴视图，每个 `track` 对应一条轨道。
+`parallel` 块在 GUI 脚本区中表现为时间轴视图，每个 `track` 对应一条轨道；interactive track 以特殊标记区分。
 
 **立绘状态（sprite states）**
 
@@ -770,25 +795,7 @@ with store:
     relationship["eileen"] += 5
 ```
 
-语义上等价于连续写多行 `$`，但意图更清晰——这是一组原子性的状态变更。块内只允许赋值语句，不允许流程控制（`if`、`for`、函数调用等）；违反时抛出解析错误。
-
-**检查时机：两阶段**
-
-- **阶段一（引擎启动时，静态检查）**：解析器扫描 `with store` 块的 AST，检查每条语句是否为纯赋值（`ast.Assign` / `ast.AugAssign`），发现违规立即报错，不等到运行时。
-- **阶段二（`exec()` 前，防御性守卫）**：即使静态检查通过，`exec()` 前再做一次类型断言，防止动态生成代码绕过静态检查的极端情况。
-
-**右值限制**：只允许字面量或 `store` 变量引用。右值含函数调用时报错并提示改用 `$` 块——`with store` 的核心价值是"一眼看出状态变更了什么"，右值复杂了就失去这个价值。
-
-```
-AxnParseError: 'with store' block only allows assignment statements (line 42, scene.apy)
-  Found: if flag_met_eileen:  ← control flow not allowed here
-  Hint: Move logic to a 'python:' block above, then assign the result with '$' or 'set'.
-  42 | with store:
-  43 |     if flag_met_eileen:   ← violation
-  44 |         day += 1
-```
-
-链式赋值（`a = b = 0`）和解包赋值（`a, b = b, a`）均允许，AST 层面仍为 `ast.Assign`，语义上是纯状态变更。
+提供真正的原子语义：执行前对涉及的 key 做快照，中途抛出异常时自动回滚，保证状态变更要么全部完成、要么完全不发生。块内只允许赋值语句，不允许流程控制（`if`、`for`、函数调用等）；违反时抛出解析错误。由于受限语法使涉及的 key 在编译期静态确定，快照成本极低。
 
 **`const` 声明**
 
@@ -813,6 +820,8 @@ flag:
 `flag` 块只允许出现在文件顶层，不允许嵌套在 `label` 或其他块内。右值必须是字面量（`bool`、`int`、`str`、`None`），不允许表达式。引擎启动时静态扫描所有 `flag` 块，生成全局变量注册表；引用了未声明变量时，引擎输出警告但不阻止运行（兼容直接用 `$` 赋值的工作流）。
 
 `flag` 块声明的变量直接写入 `store`，访问方式与普通 `store` 变量完全一致，无命名空间前缀。
+
+有类型注解的变量在 debug 模式下触发即时类型检查：引擎通过 `Store.__setitem__` 钩子，在赋值时立即验证类型是否匹配，不匹配时抛出 `AxnTypeError` 并指明声明位置，而不是等到存档时才发现。release 模式下 `Store` 退化为普通 `dict`，零开销。
 
 **`set` 指令（GUI 友好写法）**
 
@@ -975,6 +984,10 @@ include "common/prologue.apy"
 | `choice` 动词 | 脚本区代码节点（选项列表为运行时数据，GUI 不解析内容） |
 | `input disable` / `input enable` | 脚本区输入控制节点；块语法对应包裹节点，对称写法对应独立节点 |
 | `modal show/hide` | 脚本区模态框节点；`as result` 显示返回值变量名 |
+| `menu as` 返回值 | 脚本区独立"菜单返回值"节点，与跳转型菜单节点分开；`->` 右侧显示返回值表达式字段 |
+| `define extends` 角色继承 | 角色定义积木块显示继承关系；子角色字段列表中继承字段以灰色标注来源 |
+| `jump/call/return if/unless` 条件短路 | 脚本区带条件标签的跳转箭头节点，视觉权重轻于完整 `if` 块 |
+| `track (interactive)` | 时间轴视图中以特殊标记区分交互轨道与普通轨道；普通轨道内出现对话行时编辑器报错 |
 
 ### 静态与动态修饰符
 
@@ -1057,6 +1070,10 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 | `set` | 变量名 = 值 | — |
 | `on enter` | label 名 | — |
 | `on key` | 键名字符串 | — |
+| `menu as` | — | — （选项内 `->` 右侧为返回值表达式） |
+| `jump if/unless` | 目标 label | 条件表达式（行末 `if`/`unless` 后） |
+| `call if/unless` | label 调用 | 条件表达式（行末 `if`/`unless` 后） |
+| `return if/unless` | — | 条件表达式（行末 `if`/`unless` 后） |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
 
@@ -1157,23 +1174,6 @@ flag:
 
 **`say` 动词**：专用于说话者在运行时动态决定的场景。静态说话者必须使用 `角色:` 或 `@`，`say` 传入静态角色名（编译期可确定的标识符）时报错，不允许作为 `角色:` 的等价写法。此限制保证代码风格统一，消除"两种写法都能用"带来的歧义。修饰符与对话行修饰符完全一致。
 
-**`say` 静态/动态判断规则**：基于第一遍扫描建立的全局符号表（所有 `define` 声明的角色名）做两级判断：
-
-- **规则一**：标识符在符号表中存在（已通过 `define` 声明的角色名）→ 判定为静态，报错并提示改用 `角色:` 语法。
-- **规则二**：标识符不在符号表中 → 判定为运行时变量，允许通过，运行时检查是否为 `Character` 实例。
-
-```
-AxnParseError: 'say' requires a runtime variable. (line 10, scene.apy)
-  'eileen' is a defined character. Use 'eileen: "hello"' instead.
-```
-
-```
-AxnRuntimeError: 'say' requires a Character instance, got str.
-  Hint: Did you mean to use a store variable holding a Character object?
-```
-
-**变量名遮蔽禁止**：引擎在 `$` 赋值时检查左值是否与符号表中的角色名冲突，冲突时报错。禁止将 `store` 变量命名为已声明的角色名，避免在 `say` 处引入复杂的遮蔽逻辑。
-
 **`choice` 动词**：`menu` 是静态声明语义，选项在编译期确定，GUI 完整解析为菜单节点。`choice` 专门处理动态场景，接受运行时生成的选项列表（`list[dict]`），整体作为代码节点处理，GUI 不尝试解析列表内容。两者定位不重叠，`choice` 不是 `menu` 的超集。
 
 **`input disable` 两种形式**：对称写法（`input disable` / `input enable`）和块语法（`input disable: ...`）均支持，两者语义等价。块语法是推荐写法——引擎保证块结束后自动恢复，即使块内发生 `jump` 或异常也能正确还原输入状态，无需手动配对 `enable`。对称写法保留，适合跨 label 的长期禁用场景。`input disable` 支持细粒度 flag 列表（`skip`、`rollback`、`all`），无参数时等价于 `(all)`。
@@ -1189,6 +1189,24 @@ AxnRuntimeError: 'say' requires a Character instance, got str.
 **分层立绘**：角色立绘支持两种模型，二选一，同一 `define` 块内不可混用，混用时引擎启动报错。`states` 模型：整图切换，每个状态对应一张完整立绘图片。`layers` 模型：多图层叠加，静态层（单文件）不参与状态切换，动态层（有子状态列表）通过修饰符切换；`expressions` 映射将一个修饰符名映射到多个动态层的组合状态，`expressions` 映射必须覆盖所有动态层，漏写时引擎启动报错。图层叠加顺序：要么全部走声明顺序，要么全部写 `z_order`，不允许混用，混用时引擎启动报错。
 
 **`expression` 指令**：无对话时切换表情的专用指令，`show` 不承担此职责。`states` 模型下 `expression eileen happy` 整图切换；`layers` 模型下走 `expressions` 映射。`layers` 模型支持直接指定各层（`expression eileen (face=happy, brow=angry)`）绕过映射，也支持换装（`expression eileen (outfit=casual)`）。可选 `transition` 具名参数控制过渡效果。两套模型下用户侧语法完全一致，差异由引擎内部按角色声明类型分派。
+
+**`menu as` 返回值**：`menu as result` 选完后继续当前执行流，选项 `->` 右侧为返回值表达式而非 label 名。`menu as` 内不允许 `jump`，混用时解析器报错。需要前置逻辑时用展开块 + 显式 `->` 返回。GUI 对应独立的"菜单返回值"节点，与跳转型菜单节点分开，不混用。
+
+**`define extends` 角色继承**：子角色继承父角色所有字段，显式声明的字段覆盖父定义。`layers` 模型下同名动态层内按 key 合并，未声明状态继承父定义。只允许单继承，不支持链式，避免字段来源追踪困难。继承只发生在编译期展开，运行时两个角色是完全独立的显示对象。
+
+**条件跳转短路写法**：`jump`/`call`/`return` 行末可接 `if`/`unless` 条件，条件表达式为完整 Python 表达式。不支持 `call ... as result if ...`（条件不满足时返回值语义不明），退回 `if` 块处理。GUI 对应带条件标签的跳转箭头节点，视觉权重轻于完整 `if` 块，与 `unless` 卫语句设计意图一致。
+
+**`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 下 interactive track 未完成的对话被打断是合法行为，但编辑器给出警告。此设计消除了对话行与并行执行之间的交互模型歧义。
+
+**`with store` 真正的原子语义**：执行前对涉及 key 做快照，异常时自动回滚。块内只允许赋值语句使得涉及 key 在编译期静态确定，快照成本极低。"原子性"是有实现保证的语义，不是注释。
+
+**`flag` debug 模式类型检查**：有类型注解的变量在 debug 模式下通过 `Store.__setitem__` 钩子即时验证类型，错误信息包含声明位置。release 模式下 `Store` 退化为普通 `dict`，零开销。避免类型错误拖到存档时才暴露。
+
+**`menu` 的 `default` 参数**：使用选项 `id` 而非选项文本，避免多语言环境下文本匹配失败。选项通过可选的 `(id="...")` 声明标识符；未声明 `id` 时以选项文本作为 fallback，引擎启动时输出警告提示多语言风险。
+
+**`on key` 组合键**：字符串格式为 `"修饰键+key"`，修饰键小写，顺序固定为 `ctrl → shift → alt → key`，用 `+` 连接（如 `"ctrl+s"`、`"shift+f5"`）。解析器在启动时验证格式合法性。
+
+**`camera reset` 清除 follow 状态**：`camera reset` 同时清除 follow 状态，恢复静止镜头。reset 后需要继续 follow 须显式重新声明，避免隐式状态残留。
 
 ---
 
