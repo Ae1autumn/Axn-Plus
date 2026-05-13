@@ -1429,6 +1429,33 @@ gui confirm_button(label) extends base_button:
     # size 和 text 继承 base_button
 ```
 
+**`extends` 继承边界：属性层继承，结构层不继承。**
+
+`extends` 继承分两层，规则明确：
+
+- **属性层**（总是继承）：所有标量属性（`background`、`size`、`padding` 等），子类声明覆盖父类。
+- **结构层**（不继承）：子控件树结构不继承。需要在父类结构内扩展时，父类通过 `slot` 声明扩展点，子类填充。
+
+```apy
+gui base_button(label, width=120):
+    size (width, 40)
+    background #444444
+    slot prefix              # 扩展点：前置内容（图标等）
+    text label:
+        anchor center
+    slot suffix              # 扩展点：后置内容
+
+gui danger_button(label) extends base_button:
+    background #cc2222       # 覆盖属性，结构不变，直接复用父类树
+
+gui icon_button(label, icon) extends base_button:
+    slot prefix:             # 填充父类扩展点
+        default:
+            image icon (size=(20, 20))
+```
+
+结构差异大的控件直接新写，不强行继承。`slot` 作为扩展点能覆盖绝大多数"想在父类结构里塞点东西"的场景；真正结构不同时，强行继承只会增加维护成本。
+
 #### 简写语法
 
 以下简写在不产生歧义的前提下减少代码量，完整写法始终有效。
@@ -1719,6 +1746,37 @@ gui collapsible(title):
 2. 控件销毁（所在 `screen` 关闭）时 `state` 丢弃，不持久化
 3. `state` 不写入 `store`，两者完全隔离——需要持久化时开发者显式用 `store`
 
+**实例标识（`key`）：**
+
+引擎用 `(父容器路径, key)` 作为控件实例的稳定标识，决定 `state` 在跨帧、列表重排时能否正确保持。
+
+静态列表（顺序固定）不写 `key` 时，引擎按声明顺序分配隐式 index（`key=0`、`key=1`……），行为可预测。动态列表内控件增减或重排时，隐式 index 会导致 `state` 错位，必须显式指定 `key`：
+
+```apy
+# 静态列表，顺序固定，隐式 index 安全
+vstack:
+    collapsible("章节一"):
+        text "内容一"
+    collapsible("章节二"):
+        text "内容二"
+
+# 动态列表，必须显式 key
+for item in quest_list:
+    collapsible(item.title, key=item.id):   # key 必须是稳定标识符
+        text item.description
+```
+
+`key` 类型只允许 `str` 或 `int`，解析期检查。debug 模式下对动态列表内无 `key` 的控件输出警告。
+
+**`state` 销毁时机完整规则：**
+
+| 情况 | 行为 |
+|------|------|
+| screen 关闭 | 所有 state 丢弃 |
+| 动态列表重排，key 匹配 | state 保留 |
+| 动态列表重排，key 消失 | state 丢弃 |
+| 动态列表重排，无 key | 按隐式 index 对齐，可能错位，debug 模式输出警告 |
+
 #### 2. 控件间事件系统
 
 控件之间通过 `emit` / `on_event` 通信，与顶层 `on enter` / `on key` 钩子命名不冲突。
@@ -1752,9 +1810,25 @@ gui theme_preview:
 
 不写 `channel` 时默认冒泡行为不变；写 `channel` 时广播到所有订阅该频道的控件，不受树结构限制。
 
+**停止冒泡：**
+
+`on_event` 块末尾用 `-> stop` 阻止事件继续向上冒泡；不写或写 `-> propagate` 则继续冒泡（默认行为）：
+
+```apy
+on_event "tab_changed": (tab):
+    show_content(tab)
+    -> stop         # 停止冒泡，外层容器不再收到此事件
+
+on_event "tab_changed": (tab):
+    log(tab)
+    -> propagate    # 继续冒泡（默认，不写等价于此）
+```
+
+`-> stop` 只对无 `channel` 的冒泡事件有意义。具名频道事件不冒泡，写 `-> stop` 时引擎启动输出警告（无效操作）。
+
 **事件作用域规则**：
-- 无 `channel`：向父容器冒泡，不广播到全局
-- 有 `channel`：广播到所有订阅该频道的 `on_event`，不冒泡
+- 无 `channel`：向父容器冒泡，不广播到全局；`-> stop` 可阻断
+- 有 `channel`：广播到所有订阅该频道的 `on_event`，不冒泡；`-> stop` 无效
 
 #### 3. 控件过渡动画
 
@@ -2174,6 +2248,18 @@ EileenBox extends BaseBox:
 
 **样式系统四层优先级**：`自身声明 > 手动 apply mixin（后 > 前）> 自动推导 style > extends 父类自身声明 > extends 父类 apply > theme token 默认值`。`style` 参与自动推导（按 `控件名`、`控件名_状态`、`控件名_子元素`、`控件名_子元素_状态` 命名约定），`mixin` 不参与自动推导。自动推导只拾取自身名字匹配的 `style`，不沿 `extends` 继承链向上查找。`mixin` 支持参数化（函数签名风格）。冲突时规则唯一，引擎启动时对已知冲突输出警告。
 
+**`style` 自动推导不沿继承链向上查找**：子控件不自动继承父控件的 `style`（如 `base_button_hovered` 对 `my_button` 不生效），避免"改父类 style 隐式影响所有子类"的耦合问题。需要继承父类 style 时，显式声明 `inherit_styles`：
+
+```apy
+gui my_button(label) extends base_button:
+    inherit_styles          # 显式 opt-in：向上查找父类 style
+    background #cc2222
+# base_button_hovered 现在对 my_button 生效
+# my_button_hovered 仍可覆盖（优先级不变）
+```
+
+不写 `inherit_styles` 时，编辑器在样式面板对未匹配的状态 style 输出提示（灰色标注"未定义，如需 hover 效果请定义 style my_button_hovered 或声明 inherit_styles"）。
+
 **具名频道事件**：`emit` 不写 `channel` 时向父容器冒泡；写 `channel` 时广播到所有订阅该频道的 `on_event`，不受控件树结构限制，不冒泡。两种模式不混用，规则无歧义。
 
 ---
@@ -2217,6 +2303,10 @@ EileenBox extends BaseBox:
 | `style` 全局具名样式 | 样式库面板独立区域，与 `mixin` 分开展示 |
 | 自动推导生效的 `style` | 控件节点样式面板显示"自动推导来源：style 名"，灰色标注 |
 | `emit channel=` 具名频道 | 编辑器以跨树箭头表示频道事件流向，与冒泡事件箭头视觉区分 |
+| `-> stop` / `-> propagate` | 事件处理器节点上的冒泡控制标记；`-> stop` 以红色终止符显示，`-> propagate` 灰色（默认不显示） |
+| `key=` 实例标识 | 动态列表内控件节点显示 key 字段；无 key 的动态列表控件以黄色警告标注 |
+| `inherit_styles` | 控件节点样式面板显示"继承父类 style"标记，向上查找的 style 以蓝色来源标注区分自身推导 |
+| `slot` 扩展点（父类声明） | 控件定义视图中以虚线框显示扩展点位置，子类填充后显示实际内容预览 |
 
 ---
 
