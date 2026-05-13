@@ -130,6 +130,8 @@ define char eileen_casual extends eileen:
 # - 只允许单继承，不允许链式（A extends B extends C）
 # - 继承只发生在编译期展开，运行时 eileen_adult 与 eileen 是完全独立的对象
 # - show eileen_adult 和 show eileen 互不影响
+# - 运行时修改 eileen 的层状态（表情、换装等），eileen_adult 完全不受影响，反之亦然
+# - layers 模型下的 key 合并也发生在编译期，运行时两个角色的层状态互不共享
 
 # 分层立绘：states 和 layers 二选一，不可混用
 # states：整图切换模型
@@ -373,15 +375,15 @@ match relationship["eileen"]:
         jump route_bad
 
 # 菜单
-menu (timeout=10.0, default="拒绝"):
-    "答应她":
+menu (timeout=10.0, default="refuse"):
+    "答应她" (id="agree"):
         $ flag_agreed = True
         jump route_a
-    "拒绝" (if=flag_can_refuse):
+    "拒绝" (id="refuse", if=flag_can_refuse):
         jump route_b
-    "询问详情" (if=flag_met_eileen, disabled=flag_tired):
+    "询问详情" (id="ask", if=flag_met_eileen, disabled=flag_tired):
         jump route_c
-    "隐藏选项" (hidden=flag_secret):
+    "隐藏选项" (id="secret", hidden=flag_secret):
         jump route_secret
 
 # menu 内联跳转：选项只有一条 jump 时可用 -> 省略展开块
@@ -516,6 +518,15 @@ call animation eileen_enter
 call animation eileen_enter as anim   # 用 as 接句柄，配合 wait for 使用
 ```
 
+`as anim` 得到的是 `AnimationHandle` 对象，只暴露以下接口：
+
+```python
+anim.done        # bool，动画是否完成
+anim.cancel()    # 立即停止动画
+```
+
+`wait for anim` 是引擎层语法糖，底层轮询 `anim.done`。不允许在 Python 块里直接操作 `AnimationHandle` 对象——此限制保证 GUI 能完整解析 `wait for` 的依赖关系。
+
 `animation` 块内只允许引擎指令（`show`、`hide`、`camera`、`play`、`wait` 等），不允许 Python 块、对话行、`jump`、`menu`。目的是保证 GUI 能完整解析，也防止演出片段携带业务逻辑。
 
 **并行轨道（parallel / track）**
@@ -548,7 +559,7 @@ parallel (wait=any):
         ...
 ```
 
-`wait=any` 下，interactive track 未完成的对话会被打断——语义合法，但编辑器给出警告。
+`wait=any` 与 interactive track 共存时，解析器直接报错，不允许此组合。理由：interactive track 正在等用户点击时，"最先完成的 track"触发推进，点击事件时机不可预测，会产生误触或输入状态污染。需要提前推进的场景，改用 `wait=none` + 手动 `wait for` 精细控制。
 
 `track` 可命名后用 `wait for` 精细控制：
 
@@ -792,10 +803,33 @@ animation eileen_enter:
 with store:
     flag_met_eileen = True
     day += 1
-    relationship["eileen"] += 5
+    relationship = new_rel      # ✅ 整体替换顶层变量
+    # relationship["eileen"] += 5  ← 解析期报错，改用 python: 块先算好再赋值
 ```
 
-提供真正的原子语义：执行前对涉及的 key 做快照，中途抛出异常时自动回滚，保证状态变更要么全部完成、要么完全不发生。块内只允许赋值语句，不允许流程控制（`if`、`for`、函数调用等）；违反时抛出解析错误。由于受限语法使涉及的 key 在编译期静态确定，快照成本极低。
+提供真正的原子语义：执行前对所有涉及的顶层 key 做快照，中途抛出异常时自动回滚，保证状态变更要么全部完成、要么完全不发生。
+
+**原子性边界**：`with store` 只保证顶层 `store` 变量的原子性。块内只允许顶层变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问（`dict["key"]`）、属性访问（`obj.attr`）、方法调用（`list.append(...)`）或任何流程控制。违反时解析期报错：
+
+```
+AxnParseError: 'with store' only allows top-level store assignments.
+  Use a 'python:' block for nested mutations, then assign the result.
+  12 | relationship["eileen"] += 5
+```
+
+需要批量修改 `dict` 子项时，先在 `python:` 块里算好新值，再用 `with store` 整体赋值：
+
+```apy
+python:
+    new_rel = dict(relationship)
+    new_rel["eileen"] += 5
+
+with store:
+    relationship = new_rel
+    day += 1
+```
+
+由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低。
 
 **`const` 声明**
 
@@ -952,7 +986,7 @@ include "common/prologue.apy"
 | `translate` 块 | 对话积木块的多语言标签页 |
 | `animation` block | 脚本区独立节点，内容可完整解析为子积木序列 |
 | `parallel / track` | 脚本区时间轴视图 |
-| `with store` 块 | 脚本区代码节点（与 `python:` 块同等处理） |
+| `with store` 块 | 脚本区代码节点（与 `python:` 块同等处理）；块内只允许顶层赋值，违反时编辑器解析期报错 |
 | `const` | 脚本区只读常量节点 |
 | `template / extends` | 窗口区组件继承树 |
 | `transform` block | 脚本区 keyframe 时间轴编辑器，属性列表完整可解析；`compose`、`repeat pingpong`、逐段 easing 均可解析 |
@@ -973,7 +1007,7 @@ include "common/prologue.apy"
 | `voice` 短路径 | 对话积木块内 voice 字段，显示短路径，存储时保留短路径形式 |
 | `flag` 声明块 | 脚本区变量注册表面板，完整可解析 |
 | `set` 指令 | 专用积木块，显示变量名 + 值；右值复杂时降级代码节点，归属关系保留 |
-| `checkpoint` | 脚本区存档点积木块 |
+| `checkpoint` | 脚本区存档点积木块；存档在指令执行后、下一行执行前触发，记录执行位置而非状态快照 |
 | `assert` | 脚本区断言积木块，显示条件 + 消息；release 模式下标记为灰色（已剥离） |
 | `on enter / on key` | 编辑器独立事件钩子面板，与流程图分离展示 |
 | `pause / resume music/sound/video` | 音频积木块的暂停/恢复节点，与 `play` / `stop` 同类 |
@@ -1160,9 +1194,33 @@ flag:
 
 **`checkpoint`**：引擎指令层语法，GUI 完整解析为存档点积木块。`thumbnail=current` 表示截取当前帧作为存档缩略图，为引擎保留关键字，不暴露为 Python 值。
 
+**`checkpoint` 存档时机**：存档在 `checkpoint` 指令本身执行完毕后、下一行执行前触发。存档记录的是"执行位置"（即 `checkpoint` 之后的下一行），而不是某个状态快照。读档后从 `checkpoint` 的下一行开始重新执行，`checkpoint` 之后的赋值语句会在读档后重新运行，不会丢失。
+
+```apy
+checkpoint "第二章"
+$ flag_chapter2 = True      # 读档后此行会重新执行，状态正确
+scene bg_morning
+```
+
+此模型与 Ren'Py 一致。开发者需注意：`checkpoint` 之前的副作用（如外部 API 调用）在读档后不会重新执行，有副作用的操作应放在 `checkpoint` 之后。
+
 **`assert`**：语义与 Python `assert` 完全一致，引擎在编译期识别并在 release 模式下剥离。右值允许任意 Python 表达式，消息部分允许 f-string。GUI 以灰色标记表示"此节点在 release 下不存在"。
 
 **`on` 块作用域**：强制顶层定义，不允许出现在 `label` 或任何块内。GUI 在独立事件钩子面板中展示，与脚本流程图完全分离。块内 Python 代码按常规规则降级为代码节点。`on change` 暂不支持，响应式语义对 `store` 代理的实现成本与 GUI 追踪复杂度不值得现阶段引入。
+
+**`on key` 与 `input disable` 的优先级**：`input disable` 生效期间，所有 `on key` 绑定被屏蔽，无例外。`input disable` 的 flag 列表控制屏蔽粒度——需要保留部分按键响应时，通过 flag 精确指定：
+
+```apy
+# 只禁用跳过和回滚，escape 仍然触发 on key 绑定
+input disable (skip, rollback):
+    play video "cutscene/intro.mp4"
+    wait for video
+
+# 全部禁用（含 on key），过场动画期间无法跳过
+input disable:
+    play video "cutscene/intro.mp4"
+    wait for video
+```
 
 **位置参数连续填充规则**：位置参数必须从第一个开始连续提供，跳过任何一个则之后全部改具名参数。不支持占位符语法（`_`）。规则全局统一，适用于所有指令，用户学一条规则即可推导所有指令行为。
 
@@ -1196,9 +1254,9 @@ flag:
 
 **条件跳转短路写法**：`jump`/`call`/`return` 行末可接 `if`/`unless` 条件，条件表达式为完整 Python 表达式。不支持 `call ... as result if ...`（条件不满足时返回值语义不明），退回 `if` 块处理。GUI 对应带条件标签的跳转箭头节点，视觉权重轻于完整 `if` 块，与 `unless` 卫语句设计意图一致。
 
-**`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 下 interactive track 未完成的对话被打断是合法行为，但编辑器给出警告。此设计消除了对话行与并行执行之间的交互模型歧义。
+**`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 与 interactive track 共存时解析器直接报错——interactive track 等待用户点击期间，`wait=any` 触发推进的时机不可预测，会产生输入状态污染，此组合没有合理的使用场景。需要提前推进时改用 `wait=none` + 手动 `wait for`。此设计消除了对话行与并行执行之间的交互模型歧义。
 
-**`with store` 真正的原子语义**：执行前对涉及 key 做快照，异常时自动回滚。块内只允许赋值语句使得涉及 key 在编译期静态确定，快照成本极低。"原子性"是有实现保证的语义，不是注释。
+**`with store` 真正的原子语义**：只允许顶层 `store` 变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问、属性访问、方法调用或任何流程控制。违反时解析期报错，不静默通过。原子性边界明确：快照和回滚只针对顶层 key，`dict`/`list` 子项的内部修改不在保证范围内——需要修改子项时，先在 `python:` 块里构造好新值，再用 `with store` 整体赋值。由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低，"原子性"是有实现保证的语义，不是注释。
 
 **`flag` debug 模式类型检查**：有类型注解的变量在 debug 模式下通过 `Store.__setitem__` 钩子即时验证类型，错误信息包含声明位置。release 模式下 `Store` 退化为普通 `dict`，零开销。避免类型错误拖到存档时才暴露。
 
