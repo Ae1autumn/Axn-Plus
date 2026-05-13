@@ -1325,6 +1325,343 @@ Axn-Plus 的 UI 系统按后端分为两条路线，Pygame 后端下细分为两
 
 ---
 
+### 内置控件系统
+
+#### 设计原则
+
+**不做 `textbutton` / `imagebutton` 这种分类。** Ren'Py 的控件体系把内容类型混进了控件类型，导致组合场景没有标准写法。Axn-Plus 的内置控件只定义结构和交互语义，内容通过 `slot children` 填充，样式通过样式系统注入。
+
+**控件本身不预设视觉。** `button` 不携带任何默认背景或颜色，`style button` 全局推导注入项目默认样式，不写则自然是素的。调用点不允许内联样式属性，需要临时覆盖时先定义 `mixin`，再通过 `style=` 具名参数传入。
+
+**三条样式传递路径：**
+
+```
+路径一：全局 style 自动推导（零配置，按命名约定自动绑定）
+路径二：gui 定义内 apply mixin（项目级复用）
+路径三：调用点 style= 参数（实例级覆盖，只接受 mixin，不接受 style）
+```
+
+优先级：`调用点 style= > gui 内 apply > 自动推导 style > theme token`
+
+**`style=` 只接受 `mixin`，不接受 `style`。** `style` 是全局推导用的，`mixin` 是手动 apply 用的，两者职责不混。
+
+#### 控件分层
+
+控件按职责分三层：
+
+| 层级 | 说明 | 例子 |
+|------|------|------|
+| 原语控件 | 引擎内置，直接映射渲染调用，不可再拆分 | `text`、`image`、`rect`、`canvas` |
+| 交互控件 | 引擎内置，提供交互语义，内容由 `slot children` 填充 | `button`、`toggle`、`slider`、`input_field` |
+| 复合控件 | 用 `gui` + `extends` 定义，引擎标准库或项目级提供 | `text_button`、`image_button` 等便利封装 |
+
+复合控件是可选的便利封装，不是独立控件类型。`text_button` 本质上等价于 `button` 内放 `text`，引擎标准库提供它只是为了减少样板代码。
+
+#### 原语控件
+
+```apy
+text "内容"                         # 文本渲染
+text "内容" (font_size=18, color=#ffffff, anchor=center)
+
+image "assets/bg.png"               # 图片渲染
+image "assets/bg.png" (size=(200, 200), anchor=top_left)
+
+rect (size=(200, 40), color=#444444, border_radius=8)   # 矩形
+
+canvas (size=(100, 100)):           # Python 逃逸绘制，局部 surface 坐标从 (0,0) 开始
+    python:
+        pygame.draw.circle(surface, (255, 0, 0), (50, 50), 30)
+```
+
+#### 交互控件
+
+**`button`**
+
+第一个位置参数是 `label`（字符串字面量），自动渲染为内部 `text`。需要图片或自定义内容时不传 `label`，走 `slot children`。
+
+```apy
+# 文字按钮（高频写法）
+button "确认" on_click: jump route_a
+
+# 图片按钮（走 slot children）
+button on_click: jump gallery_001
+    image "cg/001.png"
+
+# 组合内容
+button on_click: jump route_a
+    hstack:
+        image "icon.png"
+        text "确认"
+
+# 调用点样式覆盖（只接受 mixin）
+button "删除" (style=danger_style) on_click: jump delete
+
+# 素的按钮：不定义 style button，控件自然无视觉
+button "跳过" on_click: jump skip
+```
+
+`button` 不携带任何默认视觉，样式完全由 `style button` 全局推导或 `style=` 参数决定。
+
+**`toggle`**：双态开关，绑定 bool 变量
+
+```apy
+toggle "音效" bind=store["sfx_on"]
+toggle "音效" bind=store["sfx_on"] (style=my_toggle_mixin)
+```
+
+**`slider`**：数值滑条，可拖动
+
+```apy
+slider bind=store["volume"] min=0.0 max=1.0
+slider bind=store["volume"] min=0 max=100 step=1
+```
+
+**`input_field`**：单行文本输入框
+
+```apy
+input_field bind=store["player_name"] placeholder="输入名字" max_length=12
+```
+
+**`textarea`**：多行文本输入框
+
+```apy
+textarea bind=store["note"] placeholder="写点什么" (size=(300, 120))
+```
+
+**`number_input`**：数字专用输入，带步进按钮
+
+```apy
+number_input bind=store["age"] min=0 max=99 step=1
+```
+
+**`radio_group`**：单选组，选项列表静态声明
+
+```apy
+radio_group bind=store["difficulty"] options=["简单", "普通", "困难"]
+```
+
+**`checkbox_group`**：多选组
+
+```apy
+checkbox_group bind=store["unlocked"] options=["结局A", "结局B", "结局C"]
+```
+
+**`dropdown`**：下拉选择，Ren'Py 原生缺失的场景
+
+```apy
+dropdown bind=store["lang"] options=["中文", "English", "日本語"]
+```
+
+#### 展示控件
+
+**`rich_text`**：富文本，支持内联样式标签
+
+```apy
+rich_text "这是<b>粗体</b>和<color=#ff0000>红色</color>文字"
+```
+
+**`typewriter`**：打字机效果文本，底层与脚本层对话文本共享 `TextRenderer` 实现
+
+```apy
+typewriter text="你好，世界。" speed=0.5
+typewriter text=store["dialogue"] speed=store["text_speed"] on_complete: emit "dialogue_done"
+```
+
+与脚本层对话行的关系：两者共享同一套 `TextRenderer` 核心模块，脚本层走对话修饰符入口，UI 层走控件参数入口，行为完全一致（富文本标签、语音同步、`nowait` 等特性在两个入口同步生效）。
+
+**`progress_bar`**：进度条，只读，不可交互
+
+```apy
+progress_bar value=80 max=100
+progress_bar value=store["hp"] max=store["max_hp"] (color=#ff0000)
+```
+
+与 `slider` 的区别：`slider` 可拖动，`progress_bar` 纯展示。
+
+**`countdown`**：倒计时展示，配合 `menu (timeout=)` 使用
+
+```apy
+countdown duration=10.0 bind=store["menu_timer"]
+```
+
+**`tooltip`**：悬停提示，内置 `follow mouse` 行为
+
+```apy
+button "？" on_click: ...:
+    tooltip "点击查看详情"
+
+# 自定义 tooltip 内容
+button "装备" on_click: ...:
+    tooltip:
+        vstack:
+            text item.name (font_size=16)
+            text item.description (color=#aaaaaa)
+```
+
+**`badge`**：角标，叠加在父控件右上角
+
+```apy
+button "邮件":
+    badge count=store["unread_count"]       # 数字角标
+    badge text="NEW"                        # 文字角标
+```
+
+**`avatar`**：头像控件，内置圆形裁剪
+
+```apy
+avatar src="portraits/eileen.png" size=64
+avatar src=store["player_avatar"] size=48 (border=(2, #ff8800))
+```
+
+**`divider`**：分割线
+
+```apy
+divider                             # 水平线
+divider (color=#444444, thickness=1)
+```
+
+**`spacer`**：间距占位
+
+```apy
+spacer (size=16)
+spacer grow                         # 占满剩余空间，配合 hstack/vstack 对齐用
+```
+
+**`video`**：UI 层视频控件（区别于脚本层 `play video`，此控件用于 UI 内嵌视频）
+
+```apy
+video "cutscene/intro.mp4" (loop, muted)
+video "bg/rain_loop.mp4" (loop, muted, size=(fill, fill))
+```
+
+#### 导航控件
+
+**`tab_bar`**：标签页导航
+
+```apy
+tab_bar bind=store["active_tab"] tabs=["道具", "状态", "地图"]:
+    slot content
+
+# 配合 match 切换内容
+tab_bar bind=store["tab"] tabs=["道具", "状态"]:
+    slot content:
+        match store["tab"]:
+            "道具" -> inventory_panel()
+            "状态" -> status_panel()
+```
+
+**`pagination`**：分页控件
+
+```apy
+pagination bind=store["page"] total=store["total_pages"]
+```
+
+#### 容器控件
+
+**`dialog`**：模态框视觉容器（命名刻意区别于脚本层 `modal` 动词，职责不重叠）
+
+脚本层 `modal show` 负责执行流控制（阻塞、焦点接管、返回值），`dialog` 只负责视觉容器。
+
+```apy
+gui ConfirmDialog:
+    dialog:
+        background "ui/panel.png"
+        padding (20, 20)
+        vstack gap=16:
+            slot body
+            hstack gap=8:
+                slot footer
+
+# 脚本层调用
+modal show "ui/confirm.apy::ConfirmDialog" as result
+```
+
+**`drawer`**：侧边抽屉
+
+```apy
+drawer side=left bind=store["drawer_open"]:
+    slot children
+```
+
+**`accordion`**：折叠面板（文档示例中 `collapsible` 的内置升级版）
+
+```apy
+accordion title="高级设置":
+    slot children
+```
+
+**`card`**：卡片容器
+
+```apy
+card:
+    slot header
+    slot content
+    slot footer
+```
+
+**`popover`**：浮层容器，锚定到触发控件
+
+```apy
+button "更多":
+    popover trigger=click anchor=bottom_left:
+        vstack:
+            button "编辑" on_click: ...
+            button "删除" on_click: ...
+```
+
+**`grid`**：网格布局，背包、图鉴、CG 画廊必需
+
+```apy
+grid columns=4 gap=8:
+    for item in inventory:
+        item_card(item, key=item.id)
+
+grid columns=3 gap=4 (row_gap=8):
+    for cg in gallery:
+        cg_thumb(cg, key=cg.id)
+```
+
+`grid` 自动计算行数，超出时与 `scroll` 配合使用：
+
+```apy
+scroll vertical:
+    grid columns=4 gap=8:
+        for item in inventory:
+            item_card(item, key=item.id)
+```
+
+#### Round-Trip Fidelity 补充（内置控件）
+
+| 控件 | GUI 处理方式 |
+|------|-------------|
+| `button` | 交互控件积木块；有 `label` 时显示文字字段，无 `label` 时显示 slot 占位符 |
+| `button (style=mixin)` | 样式字段显示 mixin 名，点击跳转 mixin 定义 |
+| `toggle` | 开关积木块，bind 变量名字段可编辑 |
+| `slider` | 滑条积木块，min/max/step 字段可编辑 |
+| `input_field` / `textarea` | 输入框积木块，placeholder/max_length 字段可编辑 |
+| `number_input` | 数字输入积木块，步进按钮配置字段 |
+| `radio_group` / `checkbox_group` | 选项组积木块，options 列表可编辑 |
+| `dropdown` | 下拉选择积木块，options 列表可编辑 |
+| `rich_text` | 富文本积木块，内联标签高亮显示 |
+| `typewriter` | 打字机积木块；speed 字段可编辑；标注"底层共享 TextRenderer" |
+| `progress_bar` | 进度条积木块，value/max/color 字段可编辑 |
+| `countdown` | 倒计时积木块，duration/bind 字段可编辑 |
+| `tooltip` | 悬停提示字段，附加在父控件节点上；自定义内容时显示 slot 占位符 |
+| `badge` | 角标字段，附加在父控件节点右上角预览位置 |
+| `avatar` | 头像积木块，src/size/border 字段可编辑，预览圆形裁剪效果 |
+| `divider` / `spacer` | 布局辅助积木块；`spacer grow` 标注"占满剩余空间" |
+| `video`（UI 层） | 视频控件积木块，与脚本层 `play video` 节点视觉区分 |
+| `tab_bar` | 标签页积木块，tabs 列表可编辑，bind 变量字段可见 |
+| `pagination` | 分页积木块，total 字段可编辑 |
+| `dialog` | 模态容器积木块；标注"视觉容器，执行流由脚本层 modal 控制" |
+| `drawer` | 抽屉积木块，side/bind 字段可编辑 |
+| `accordion` | 折叠面板积木块，title 字段可编辑，展开/折叠状态可预览 |
+| `card` | 卡片容器积木块，具名 slot 占位符显示 |
+| `popover` | 浮层积木块，trigger/anchor 字段可编辑，锚定关系以箭头标注 |
+| `grid` | 网格布局积木块，columns/gap 字段可编辑，编辑器内预览列数 |
+
+---
+
 ### `screen`（Pygame 顶层容器）
 
 `screen` 定义一个完整的 UI 画面，职责是**布局**——把控件组合成完整的 UI 画面。`gui` 负责控件的定义和复用，`screen` 负责把这些控件组织到一起。
@@ -2232,6 +2569,20 @@ EileenBox extends BaseBox:
 
 ### 关键设计决策（UI 系统）
 
+**内置控件不分 `textbutton` / `imagebutton`**：内容类型不混入控件类型。`button` 只负责交互语义，内容通过第一个位置参数（字符串 `label`）或 `slot children` 填充。`label` 只接受字符串字面量，图片必须走 `slot children`，规则唯一无歧义。引擎标准库提供 `text_button` / `image_button` 作为便利封装，但它们是复合控件，不是独立控件类型。
+
+**`button` 不预设视觉**：`button` 本身不携带任何默认背景或颜色。样式完全由 `style button` 全局推导或调用点 `style=` 参数决定。不定义 `style button` 时控件自然是素的，无需任何 flag。
+
+**`style=` 只接受 `mixin`**：调用点样式覆盖只接受 `mixin`，不接受 `style`。`style` 是全局推导用的，`mixin` 是手动 apply 用的，职责不混，边界明确。
+
+**`typewriter` 与对话文本共享 `TextRenderer`**：脚本层对话行和 UI 层 `typewriter` 控件底层共享同一套 `TextRenderer` 核心模块，两个入口行为完全一致。富文本标签、语音同步、`nowait` 等特性在两个入口同步生效，不维护两套实现。
+
+**`dialog` vs `modal`**：脚本层 `modal` 动词负责执行流控制（阻塞、焦点接管、返回值写入）；UI 层视觉容器控件命名为 `dialog`，只负责视觉呈现和布局。两者职责不重叠，命名不冲突。`modal show "x.apy::MyDialog"` 调用的是 `gui MyDialog` 内含 `dialog` 容器的控件定义。
+
+**`grid` 内置**：`grid` 是背包、图鉴、CG 画廊等高频场景的必需控件，不依赖 `vstack` + `hstack` 嵌套模拟。支持 `columns`、`gap`、`row_gap` 参数，与 `scroll` 配合处理超出场景。动态列表内控件必须显式指定 `key=`，规则与其他动态列表一致。
+
+**`dropdown` / `radio_group` / `checkbox_group` 内置**：Ren'Py 原生缺失这些控件，需要手搓。Axn-Plus 直接内置，通过 `bind=` 绑定 `store` 变量，`options=` 接受静态列表或 `store` 变量。
+
 **后端绑定**：后端在项目初始化时选定，之后固定。Pygame 项目使用 `screen` + `gui`，Qt 项目使用 `window`，不混用。
 
 **`screen` 与 `gui` 的职责**：`screen` 负责布局——把控件组合成完整的 UI 画面；`gui` 负责控件的封装与复用。`use` 只用于 screen 嵌套 screen；`gui` 控件用直接调用语法。有插槽填充时必须写 `use`，无插槽填充时 `use` 可省略。
@@ -2307,6 +2658,11 @@ gui my_button(label) extends base_button:
 | `key=` 实例标识 | 动态列表内控件节点显示 key 字段；无 key 的动态列表控件以黄色警告标注 |
 | `inherit_styles` | 控件节点样式面板显示"继承父类 style"标记，向上查找的 style 以蓝色来源标注区分自身推导 |
 | `slot` 扩展点（父类声明） | 控件定义视图中以虚线框显示扩展点位置，子类填充后显示实际内容预览 |
+| `dialog` 容器 | 模态框视觉容器积木块；标注"视觉容器，执行流由脚本层 modal 控制"，与脚本层 `modal show` 节点以连线关联 |
+| `modal show` + `dialog` 组合 | 脚本区 `modal show` 节点显示目标控件路径，点击跳转对应 `gui` 定义；编辑器标注两者职责分工 |
+| `button (style=mixin)` | 调用点样式字段显示 mixin 名，点击跳转 mixin 定义；传入 `style` 名时编辑器报错提示改用 `mixin` |
+| `grid` | 网格布局积木块，columns/gap 字段可编辑，编辑器内按列数预览网格结构 |
+| `typewriter` | 打字机积木块；标注"底层共享 TextRenderer"；speed/on_complete 字段可编辑 |
 
 ---
 
