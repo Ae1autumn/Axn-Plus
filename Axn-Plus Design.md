@@ -2745,6 +2745,168 @@ gui my_button(label) extends base_button:
 
 ---
 
+## 引擎架构
+
+### 后端抽象与线程模型
+
+引擎核心（`.apy` 运行时、`store`、脚本执行、游戏逻辑）与渲染后端完全解耦。核心不知道自己运行在 Pygame 还是 Qt 下，后端切换不影响任何游戏逻辑代码。
+
+#### Pygame 后端
+
+Pygame 后端占据主线程，游戏主循环直接在主线程内运行：
+
+```
+主线程
+└── Pygame 事件循环（60fps）
+    ├── engine.tick()       # 推进 .apy 执行
+    ├── widget_tree.layout() # 布局计算
+    └── widget_tree.draw()   # 渲染提交
+```
+
+无线程复杂性，结构最简单。
+
+#### Qt 后端：线程模型（选型 B）
+
+Qt 要求其对象的创建和操作必须在 Qt 主线程内完成。引擎核心在独立的游戏线程里运行，两者通过 Qt 信号槽桥接——`emit` 跨线程调用是 Qt 官方支持的线程安全机制，Qt 内部将其转为事件队列投递到目标线程的事件循环，不需要手动加锁。
+
+```
+Qt 主线程（Qt 事件循环 + 所有 Qt 对象的生命周期）
+    ↕ Qt 信号槽（线程安全，Qt 内部队列化）
+游戏线程（引擎核心 + .apy 运行时 + store）
+```
+
+**硬性约束：游戏线程绝对不能直接操作任何 Qt 对象。** 所有跨线程通信必须经过信号桥。
+
+#### Qt 信号桥实现
+
+```python
+from PySide6.QtCore import QObject, Signal, Slot
+
+class QtBridge(QObject):
+    """唯一的跨线程通信通道。游戏线程持有引用，只调用 emit。"""
+
+    # 游戏线程 → Qt 主线程
+    ui_update   = Signal(dict)    # 推送新的 UI 状态快照
+    scene_change = Signal(str)    # 场景切换通知
+    play_audio  = Signal(str, float)  # 音频指令
+
+    # Qt 主线程 → 游戏线程（用户输入）
+    user_input  = Signal(str, object) # (事件类型, 数据)
+
+class GameThread(threading.Thread):
+    def __init__(self, bridge: QtBridge):
+        super().__init__(daemon=True)
+        self.bridge = bridge
+        self.engine = AxnEngine()
+
+    def run(self):
+        self.engine.load("game/script.apy")
+        while self.engine.running:
+            state = self.engine.tick()
+            if state.ui_dirty:
+                self.bridge.ui_update.emit(state.to_dict())
+            time.sleep(1 / 60)
+
+class GameWindow(QMainWindow):
+    def __init__(self, bridge: QtBridge):
+        super().__init__()
+        self.bridge = bridge
+        # 所有槽函数在 Qt 主线程内执行，可以安全操作 Qt 对象
+        bridge.ui_update.connect(self._on_ui_update)
+        bridge.scene_change.connect(self._on_scene_change)
+
+    @Slot(dict)
+    def _on_ui_update(self, state: dict):
+        # 此处在 Qt 主线程，可以安全操作任何 Qt 控件
+        self._apply_ui_state(state)
+
+    def _forward_input(self, event_type: str, data=None):
+        # Qt 主线程 → 游戏线程
+        self.bridge.user_input.emit(event_type, data)
+
+def main():
+    app = QApplication(sys.argv)
+    bridge = QtBridge()
+    window = GameWindow(bridge)
+
+    game = GameThread(bridge)
+    game.start()
+
+    window.show()
+    app.exec()
+```
+
+#### `.apy` UI 描述 → Pygame 控件树
+
+`.apy` 的 `gui` / `screen` 声明在解析阶段编译为 AST，运行时由控件工厂递归实例化为控件树。
+
+**控件基类：**
+
+```python
+class Widget:
+    def __init__(self):
+        self.rect   = pygame.Rect(0, 0, 0, 0)
+        self.children: list[Widget] = []
+        self.style  = ResolvedStyle()
+        self._dirty = True
+
+    def layout(self, constraint: Constraint) -> Size:
+        """自顶向下传入可用空间约束，自底向上返回实际占用尺寸。单次 pass 完成。"""
+        raise NotImplementedError
+
+    def draw(self, surface: pygame.Surface, offset: tuple[int, int]):
+        raise NotImplementedError
+
+    def handle_event(self, event: pygame.Event) -> bool:
+        """返回 True 表示事件已消费，停止向上冒泡。"""
+        for child in reversed(self.children):
+            if child.handle_event(event):
+                return True
+        return False
+```
+
+布局采用 **constraint-based layout**：父控件将可用空间作为约束向下传递，子控件在约束范围内决定自身尺寸并向上返回，单次遍历完成整棵树的布局。比绝对定位灵活，比完整 CSS box model 轻量，适合游戏 UI 的使用场景。
+
+**AST → 控件树翻译：**
+
+```python
+def build_widget(node: ASTNode, ctx: BuildContext) -> Widget:
+    match node:
+        case VStackNode(gap=g, children=ch):
+            stack = VStackWidget(gap=g)
+            stack.children = [build_widget(c, ctx) for c in ch]
+            return stack
+
+        case ButtonNode(label=l, on_click=handler):
+            btn = ButtonWidget(label=l)
+            btn.on_click = ctx.resolve_handler(handler)
+            return btn
+
+        case TextNode(content=c, style=s):
+            return TextWidget(content=c, style=ctx.resolve_style(s))
+
+        case PythonEscapeNode(source=src):
+            # canvas / 自定义绘制，包装为代码节点
+            return PythonCanvasWidget(source=src, ctx=ctx)
+
+        case _:
+            raise AxnBuildError(f"Unknown UI node: {type(node).__name__}")
+```
+
+样式在 `build_widget` 阶段一次性解析并注入（`theme token` → `style` 推导 → `mixin apply` → 自身声明），不在每帧运行时重复计算。
+
+### 关键设计决策（引擎架构）
+
+**Qt 后端选型 B（独立游戏线程 + 信号桥）**：引擎核心不依赖 `QTimer` 或任何 Qt 概念，游戏逻辑与 Qt 事件循环完全隔离。跨线程通信全部经过 `QtBridge` 的信号槽，Qt 内部保证线程安全，不需要手动锁。相比选项 A（独立进程）避免了 IPC 的延迟和数据同步复杂性；相比选项 C（游戏循环挂 `QTimer`）保持了引擎核心对后端的无感知。
+
+**游戏线程绝对不操作 Qt 对象**：这是 Qt 线程模型的硬性要求，也是信号桥设计的核心约束。所有需要触达 Qt 控件的操作必须通过 `bridge.signal.emit()` 发出，由 Qt 主线程的槽函数执行实际操作。
+
+**Pygame 控件树采用 constraint-based layout**：单次遍历完成布局，脏标记控制重绘范围，避免每帧全量重算。不照搬 DOM/CSS 的完整 box model，只实现引擎 UI 实际需要的布局能力（`vstack`、`hstack`、`pin`、`grid`、`grow`、`split`）。
+
+**样式在构建阶段解析，不在运行时重算**：`theme token` 展开、`style` 自动推导、`mixin apply`、优先级合并全部在控件树实例化时完成，运行时控件持有已解析的 `ResolvedStyle`，不重复查找样式链。状态样式（`hovered`、`selected` 等）例外——这部分在控件 `draw` 时按当前状态选取对应的预解析样式块。
+
+---
+
 ## 不是什么
 
 - 不是 Ren'Py 的分支或 fork
