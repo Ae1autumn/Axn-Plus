@@ -61,7 +61,15 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 
 ### 解析器模型
 
-**两遍扫描**：解析器分两遍处理 `.apy` 文件。第一遍只扫描顶层 `define` 块，建立全局符号表（角色名 → 类型）；第二遍完整解析，行首遇到已知角色名才走对话路径，否则走指令路径。`define` 只允许出现在文件顶层，保证第一遍扫描无需理解嵌套结构。跨文件时，引擎启动时扫描所有 `.apy` 文件，全局符号表建立后再做完整解析，这也是 label 冲突能在启动时报错的基础。
+**三遍扫描**：解析器分三遍处理所有 `.apy` 文件，均在引擎启动时一次性完成，不在运行时重复。
+
+- **第一遍**：轻量扫描，只收集所有 `define` 的名字，不解析字段内容和 `extends` 关系。目标是建立全局名字集合，使第二遍能识别跨文件引用。
+- **第二遍**：扫描所有 `define extends` 关系，建立继承有向图，拓扑排序确定解析顺序。检测循环继承并在此阶段报错（`AxnParseError: circular inheritance`）。同时建立全局符号表（角色名 → 类型），供第三遍使用。
+- **第三遍**：按拓扑顺序完整解析所有文件，展开继承字段，构建完整 AST。行首遇到已知角色名走对话路径，否则走指令路径。label 冲突检查也在此阶段完成。
+
+`define` 只允许出现在文件顶层，保证第一、二遍扫描无需理解嵌套结构，各遍成本极低。第一、二遍合计开销相对于第三遍可忽略不计；瓶颈始终在第三遍的 AST 构建。对未修改的文件可跳过第三遍，直接使用缓存的 AST，进一步降低重启开销。
+
+**为什么需要三遍而不是两遍**：引入 `define extends` 后，跨文件的继承依赖关系在解析前无法确定顺序——父类定义必须先于子类解析，但依赖关系本身要解析才能知道。三遍扫描将"收集名字"、"建立依赖图"、"完整解析"三个阶段显式分离，避免了解析顺序的不确定性。Ren'Py 通过不支持 `define` 继承来回避这个问题，Axn-Plus 选择支持继承，对应的代价是多一遍轻量扫描。
 
 **`$` 行不支持括号续行**：`$` 后的内容在遇到换行符时立即终止，括号不触发续行。括号不平衡时解析器立即报错并提示改用 `python:` 块，不静默失败。
 
@@ -565,6 +573,9 @@ parallel (wait=any):
 
 ```apy
 parallel (wait=none):           # 不自动等待，手动控制
+    track dialogue (interactive):
+        eileen: "第一句"
+        eileen: "第二句"
     track bgm:
         play music "bgm/tense.ogg" 0.8 1.0
     track scene as anim_scene:
@@ -572,7 +583,10 @@ parallel (wait=none):           # 不自动等待，手动控制
         camera shake 5 0.3
 
 wait for anim_scene             # 等 scene track 完成后推进
+wait for dialogue               # 等 interactive track 完成后推进
 ```
+
+**`wait=none` + interactive track 的输入路由规则**：`wait for <track>` 等待期间，interactive track 的输入路由规则与 `parallel` 块内完全一致——interactive track 独占用户输入，点击推进的是 track 内部当前等待的对话行，不影响外部 `wait for` 的等待状态。`wait for` 只观察 track 的完成信号（`track.done`），不接管输入。用户点击推进对话 → interactive track 内部状态前进 → track 执行完毕 → `wait for dialogue` 自然满足，执行流继续。外部 `wait for` 是纯被动观察者，不与输入系统交互。
 
 `parallel` 块在 GUI 脚本区中表现为时间轴视图，每个 `track` 对应一条轨道；interactive track 以特殊标记区分。
 
@@ -830,6 +844,8 @@ with store:
 ```
 
 由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低。
+
+**快照的浅拷贝语义**：快照保存的是 `store` 顶层 key 指向的对象引用，而非深拷贝。回滚时，引擎将这些 key 指回快照保存的旧引用——如果旧对象在块执行期间被外部代码（如通过 Python 直接持有引用并原地修改）改动，回滚无法恢复旧对象的内容。在纯 `.apy` 工作流下此场景不会发生。**回滚保证的语义是：`store` 顶层 key 指向执行前的对象，不保证该对象内容的深度一致性。** 需要深度一致性时，在 `python:` 块里手动构造新对象（如 `new_rel = dict(relationship)`），再通过 `with store` 整体替换顶层 key。
 
 **`const` 声明**
 
@@ -1275,9 +1291,9 @@ input disable:
 
 **条件跳转短路写法**：`jump`/`call`/`return` 行末可接 `if`/`unless` 条件，条件表达式为完整 Python 表达式。不支持 `call ... as result if ...`（条件不满足时返回值语义不明），退回 `if` 块处理。GUI 对应带条件标签的跳转箭头节点，视觉权重轻于完整 `if` 块，与 `unless` 卫语句设计意图一致。
 
-**`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 与 interactive track 共存时解析器直接报错——interactive track 等待用户点击期间，`wait=any` 触发推进的时机不可预测，会产生输入状态污染，此组合没有合理的使用场景。需要提前推进时改用 `wait=none` + 手动 `wait for`。此设计消除了对话行与并行执行之间的交互模型歧义。
+**`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 与 interactive track 共存时解析器直接报错——interactive track 等待用户点击期间，`wait=any` 触发推进的时机不可预测，会产生输入状态污染，此组合没有合理的使用场景。需要提前推进时改用 `wait=none` + 手动 `wait for`。`wait=none` 下使用 `wait for <interactive_track>` 时，输入路由规则不变：interactive track 仍然独占用户输入，`wait for` 是纯被动观察者，只轮询 `track.done`，不接管输入；用户点击推进对话 → track 内部前进 → track 完成 → `wait for` 自然满足。此设计消除了对话行与并行执行之间的交互模型歧义。
 
-**`with store` 真正的原子语义**：只允许顶层 `store` 变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问、属性访问、方法调用或任何流程控制。违反时解析期报错，不静默通过。原子性边界明确：快照和回滚只针对顶层 key，`dict`/`list` 子项的内部修改不在保证范围内——需要修改子项时，先在 `python:` 块里构造好新值，再用 `with store` 整体赋值。由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低，"原子性"是有实现保证的语义，不是注释。
+**`with store` 真正的原子语义**：只允许顶层 `store` 变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问、属性访问、方法调用或任何流程控制。违反时解析期报错，不静默通过。原子性边界明确：快照和回滚只针对顶层 key，`dict`/`list` 子项的内部修改不在保证范围内——需要修改子项时，先在 `python:` 块里构造好新值，再用 `with store` 整体赋值。由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低，"原子性"是有实现保证的语义，不是注释。快照保存的是对象引用而非深拷贝——回滚保证 `store` 顶层 key 指向执行前的对象，不保证该对象内容的深度一致性；在纯 `.apy` 工作流下此边界不可见，通过 Python 直接持有 `store` 变量引用并原地修改时需开发者自行注意。
 
 **`flag` debug 模式类型检查**：有类型注解的变量在 debug 模式下通过 `Store.__setitem__` 钩子即时验证类型，错误信息包含声明位置。release 模式下 `Store` 退化为普通 `dict`，零开销。避免类型错误拖到存档时才暴露。
 
@@ -2779,19 +2795,29 @@ Qt 主线程（Qt 事件循环 + 所有 Qt 对象的生命周期）
 
 #### Qt 信号桥实现
 
+**增量 UICommand 模型**：信号桥不传递全量 UI 状态快照，而是传递本帧产生的变更指令列表（`list[UICommand]`）。原因：60fps 下哪怕只有一个字在打字机效果里逐字更新，全量 `to_dict()` 每帧都会序列化整棵控件树，开销不必要；全量 dict 跨线程传递还需要保证无共享可变引用，否则游戏线程继续 tick 时可能修改已发出的数据。`UICommand` 是不可变 dataclass，天然不共享引用，无需额外保护。
+
 ```python
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any
 from PySide6.QtCore import QObject, Signal, Slot
+
+# UI 变更指令：不可变 dataclass，跨线程传递安全
+@dataclass(frozen=True)
+class UICommand:
+    kind: str       # "set_text" | "set_visible" | "set_style" | "scene_change" | "play_audio" | ...
+    target: str     # 控件 id 或资源路径
+    value: Any      # 新值，必须是基础类型或 frozen dataclass，不允许可变容器
 
 class QtBridge(QObject):
     """唯一的跨线程通信通道。游戏线程持有引用，只调用 emit。"""
 
-    # 游戏线程 → Qt 主线程
-    ui_update   = Signal(dict)    # 推送新的 UI 状态快照
-    scene_change = Signal(str)    # 场景切换通知
-    play_audio  = Signal(str, float)  # 音频指令
+    # 游戏线程 → Qt 主线程（增量指令列表，每帧只发变更部分）
+    ui_commands = Signal(list)      # list[UICommand]
 
     # Qt 主线程 → 游戏线程（用户输入）
-    user_input  = Signal(str, object) # (事件类型, 数据)
+    user_input  = Signal(str, object)  # (事件类型, 数据)
 
 class GameThread(threading.Thread):
     def __init__(self, bridge: QtBridge):
@@ -2802,26 +2828,24 @@ class GameThread(threading.Thread):
     def run(self):
         self.engine.load("game/script.apy")
         while self.engine.running:
-            state = self.engine.tick()
-            if state.ui_dirty:
-                self.bridge.ui_update.emit(state.to_dict())
+            commands = self.engine.tick()   # 返回本帧产生的 UICommand 列表
+            if commands:
+                self.bridge.ui_commands.emit(commands)
             time.sleep(1 / 60)
 
 class GameWindow(QMainWindow):
     def __init__(self, bridge: QtBridge):
         super().__init__()
         self.bridge = bridge
-        # 所有槽函数在 Qt 主线程内执行，可以安全操作 Qt 对象
-        bridge.ui_update.connect(self._on_ui_update)
-        bridge.scene_change.connect(self._on_scene_change)
+        bridge.ui_commands.connect(self._on_ui_commands)
 
-    @Slot(dict)
-    def _on_ui_update(self, state: dict):
-        # 此处在 Qt 主线程，可以安全操作任何 Qt 控件
-        self._apply_ui_state(state)
+    @Slot(list)
+    def _on_ui_commands(self, commands: list[UICommand]):
+        # 此处在 Qt 主线程，按指令逐条更新对应控件，不重建整棵树
+        for cmd in commands:
+            self._apply_command(cmd)
 
     def _forward_input(self, event_type: str, data=None):
-        # Qt 主线程 → 游戏线程
         self.bridge.user_input.emit(event_type, data)
 
 def main():
@@ -2898,6 +2922,8 @@ def build_widget(node: ASTNode, ctx: BuildContext) -> Widget:
 ### 关键设计决策（引擎架构）
 
 **Qt 后端选型 B（独立游戏线程 + 信号桥）**：引擎核心不依赖 `QTimer` 或任何 Qt 概念，游戏逻辑与 Qt 事件循环完全隔离。跨线程通信全部经过 `QtBridge` 的信号槽，Qt 内部保证线程安全，不需要手动锁。相比选项 A（独立进程）避免了 IPC 的延迟和数据同步复杂性；相比选项 C（游戏循环挂 `QTimer`）保持了引擎核心对后端的无感知。
+
+**信号桥采用增量 UICommand 模型**：`engine.tick()` 返回本帧产生的 `list[UICommand]`，只发变更部分，不传递全量 UI 状态快照。理由：全量快照在打字机效果等高频更新场景下每帧都会序列化整棵控件树，开销不必要；全量 dict 还需保证跨线程无共享可变引用。`UICommand` 是 frozen dataclass，天然不可变，跨线程传递安全，Qt 主线程按指令逐条更新对应控件，不重建整棵树。
 
 **游戏线程绝对不操作 Qt 对象**：这是 Qt 线程模型的硬性要求，也是信号桥设计的核心约束。所有需要触达 Qt 控件的操作必须通过 `bridge.signal.emit()` 发出，由 Qt 主线程的槽函数执行实际操作。
 
