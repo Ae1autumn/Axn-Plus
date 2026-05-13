@@ -1041,6 +1041,17 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 
 `sta` 仅在 `label` 上有意义——`label` 默认动态，加 `sta` 表示这是有意为之的静态声明，代码审查时一眼可见。`define` 本身默认静态，`sta define` 无额外语义，不支持此写法。
 
+静态 label 与动态 label 的具体区别：
+
+| | 动态 label（默认） | 静态 label（`sta`） |
+|---|---|---|
+| `dyn define` 角色引用 | 允许 | 编译期报错 |
+| `$` / `python:` 块 | 允许 | 编译期报错 |
+| GUI 解析 | 可能含代码节点 | 保证完整解析为积木块，无代码节点 |
+| 引擎优化 | 无额外优化 | 编译期预处理，跳转目标缓存 |
+
+`sta` 的核心价值：一是给 GUI 一个保证——此 label 无代码节点，可完整可视化；二是代码审查信号——作者明确声明此处不应有动态行为，后续若有人加入 `$` 块，编译器报错而不是静默通过。`sta` 不是性能优化手段。
+
 ### 指令结构
 
 所有指令遵循统一结构：
@@ -1177,9 +1188,17 @@ with eileen (happy, speed=1.0):
 
 **`narrator` 保留关键字**：`@` 和 `narrator:` 是单行旁白的两种等价写法，`with narrator:` 与 `narrate:` 块等价。`narrator` 是引擎保留关键字，不允许用户通过 `define` 覆盖；尝试 `define char narrator` 时引擎在启动时报错。三种旁白写法（`@`、`narrator:`、`narrate:` 块）风格自选，同一项目内保持一致即可。
 
-**`voice` 短路径**：对话修饰符中 `voice="001"` 自动展开为 `voice_prefix + "001" + 默认扩展名`（由 `define` 中的 `voice_prefix` 和可选的 `voice_ext` 字段决定）。完整路径写法永远有效，短路径是语法糖。推断失败时抛出 `AxnVoiceError`，不静默回退。
+**`voice` 短路径**：对话修饰符中 `voice="001"` 自动展开为 `voice_prefix + "001" + 扩展名`。扩展名推断规则：若 `define` 中声明了 `voice_ext` 字段则直接使用；未声明时引擎按 `.ogg` → `.mp3` → `.wav` 优先级扫描，找到第一个存在的文件即用，全部找不到时抛出 `AxnVoiceError`。完整路径写法永远有效，短路径是语法糖。引擎构建发布包时完整打包 `voice_prefix` 目录，扫描行为在发布包里与开发期一致。
+
+```apy
+define eileen:
+    voice_prefix "vo/eileen/"
+    voice_ext ".ogg"        # 可选；显式指定跳过扫描，性能更好；不填时按优先级自动推断
+```
 
 **`flag` 声明块**：只允许顶层声明，右值只允许字面量。支持可选类型注解（`name: type = value`），不写则不检查，保持向后兼容。引用未声明变量时输出警告不报错，保持与 `$` 工作流的兼容性。`flag` 声明的变量直接写入 `store`，无命名空间前缀，访问方式与普通变量完全一致。类型注解的作用：存档时做类型验证（不匹配抛 `AxnSaveError`）；GUI 变量面板按类型渲染控件（`bool` → 开关，`int`/`float` → 数字输入框，`str` → 文本输入框，`list`/`dict` → 折叠代码节点）；VSCode 插件可做悬停类型提示和赋值类型检查。
+
+**类型注解验证边界**：`dict` / `list` 类型注解只验证顶层类型（`isinstance` 检查），不验证内部结构。例如 `relationship: dict = {}` 只保证 `relationship` 是一个 `dict`，不保证其 key/value 的类型。需要结构验证时，继承 `Saveable` 并在 `__load__` 里手动校验，不引入额外语法。
 
 ```apy
 flag:
@@ -1192,14 +1211,16 @@ flag:
 
 **`set` 指令**：推荐写法，不强制。`$` 永远可用。`set` 修改未在 `flag` 块声明的变量时，引擎输出警告（与引用未声明变量一致）。`set` 的存在价值是让 GUI 能追踪变量归属，`$` 的存在价值是不限制 Python 能力，两者定位不重叠。
 
-**`checkpoint`**：引擎指令层语法，GUI 完整解析为存档点积木块。`thumbnail=current` 表示截取当前帧作为存档缩略图，为引擎保留关键字，不暴露为 Python 值。
+**`checkpoint`**：引擎指令层语法，GUI 完整解析为存档点积木块。`thumbnail=current` 表示截取当前帧作为存档缩略图，为引擎保留关键字，不暴露为 Python 值。存档时 call 栈被丢弃，读档后以 checkpoint 下一行作为新的顶层执行起点。`checkpoint` 出现在被 `call` 的子 label 里时引擎给出编译期警告，建议移至顶层 label 入口处。
 
 **`checkpoint` 存档时机**：存档在 `checkpoint` 指令本身执行完毕后、下一行执行前触发。存档记录的是"执行位置"（即 `checkpoint` 之后的下一行），而不是某个状态快照。读档后从 `checkpoint` 的下一行开始重新执行，`checkpoint` 之后的赋值语句会在读档后重新运行，不会丢失。
 
-```apy
-checkpoint "第二章"
-$ flag_chapter2 = True      # 读档后此行会重新执行，状态正确
-scene bg_morning
+**`checkpoint` 与 `call` 栈**：`checkpoint` 存档时 call 栈被丢弃，读档后以 checkpoint 下一行作为新的顶层执行起点，不尝试恢复调用关系。因此强烈建议将 `checkpoint` 放在顶层 label 入口处，不要放在被 `call` 的子 label 里。引擎对后者给出编译期警告：
+
+```
+AxnWarning: 'checkpoint' inside a called label discards the call stack on load.
+  Consider moving 'checkpoint' to the top-level call site instead.
+  Line 3, chapter2_start.apy
 ```
 
 此模型与 Ren'Py 一致。开发者需注意：`checkpoint` 之前的副作用（如外部 API 调用）在读档后不会重新执行，有副作用的操作应放在 `checkpoint` 之后。
