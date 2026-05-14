@@ -3375,3 +3375,418 @@ stop music (clear)      # 停止当前播放并清空队列
 - 不是 Ren'Py 的分支或 fork
 - 不是面向零编程基础用户的工具（引擎本身）
 - 不追求最大化跨平台覆盖
+
+---
+
+## 编译器与运行时系统
+
+### 编译目标：字节码
+
+`.apy` 文件经三遍扫描生成 AST 后，编译为自定义字节码执行。选择字节码而非直接解释 AST 或生成 Python 代码的理由：
+
+- 存档机制依赖"精确执行位置"，字节码的 PC（程序计数器）天然满足，AST 解释实现起来很别扭
+- `.apy` 的 Python 块已有 `compile()` + `exec()` 设计，字节码方案与之完美兼容
+- 可缓存字节码，对未修改文件跳过重新编译，降低重启开销
+
+---
+
+### 错误处理系统
+
+#### 错误分类
+
+```
+AxnError (基类)
+├── AxnParseError        # Lexer / Parser 阶段
+├── AxnCompileError      # 编译器阶段（AST → 字节码）
+├── AxnRuntimeError      # VM 执行阶段
+│   ├── AxnNameError     # 未声明变量引用
+│   ├── AxnTypeError     # 类型不匹配（flag 注解检查，debug 模式专属）
+│   ├── AxnJumpError     # jump/call 目标不存在
+│   └── AxnSaveError     # 存档序列化失败
+├── AxnAssetError        # 资源加载失败
+│   └── AxnVoiceError    # voice 短路径推断失败
+└── AxnInternalError     # 引擎自身 bug，直接暴露 Python traceback
+```
+
+#### 错误信息格式
+
+**脚本作者看到的（AxnParseError / AxnRuntimeError 等）：**
+
+```
+AxnParseError: Unclosed bracket in '$' line
+  → scene.apy, line 12
+
+  10 |
+  11 | eileen: "你好。"
+  12 | $ x = (
+            ^
+  13 |     1 + 2
+
+Hint: Multi-line Python belongs in a 'python:' block.
+```
+
+格式规则：
+- 错误类型 + 一句话描述
+- 文件名 + 行号
+- 上下文窗口（前 2 行，错误行，后 1 行）
+- `^` 指向具体列（能定位到列时）
+- `Hint:` 给出修复建议（能给的时候给）
+
+边界情况：
+- 文件开头不足 2 行时，只显示实际存在的行
+- 文件末尾没有后 1 行时，显示 `# EOF` 占位
+
+**引擎内部错误（AxnInternalError）：**
+
+```
+AxnInternalError: Unexpected state in scheduler.py
+This is a bug in the Axn-Plus engine, not your script.
+Please report at: https://github.com/axn-plus/axn-plus/issues
+
+--- Internal Traceback ---
+Traceback (most recent call last):
+  File "axn_plus/core/scheduler.py", line 84, in tick
+    ...
+```
+
+明确告诉作者"这不是你的问题"，然后才暴露 traceback。
+
+**多位置错误（label 冲突、循环引用）：**
+
+```
+AxnCompileError: Duplicate label 'morning_scene'
+  → scene.apy, line 5
+  → chapter2.apy, line 103
+
+Hint: Labels are globally visible. Rename one to resolve the conflict.
+```
+
+```
+AxnParseError: Circular inheritance detected
+  eileen_adult → eileen_teen → eileen_adult
+
+  → characters.apy, line 8   (define char eileen_adult extends eileen_teen)
+  → characters.apy, line 15  (define char eileen_teen extends eileen_adult)
+```
+
+**警告格式：**
+
+不中断执行，格式为 `AxnWarning: [模块名] 描述 → 位置`：
+
+```
+AxnWarning: [scheduler] 'wait for all' has no finite transforms to wait for.
+  All transforms are 'repeat forever'. Did you mean to use 'wait'?
+  → eileen_enter animation block, scene.apy, line 3
+```
+
+#### Hint 策略
+
+不是每个错误都有 Hint，以下情况必须给：
+
+| 错误场景 | Hint 内容 |
+|----------|-----------|
+| `$` 行括号未闭合（旧行为，现已改为警告） | 改用 `python:` 块 |
+| `with store` 内出现下标访问 | 先在 `python:` 块算好再赋值 |
+| `menu as` 内出现 `jump` | `menu as` 不允许跳转，改用 `menu` |
+| `say` 传入静态角色名 | 改用 `角色:` 语法 |
+| `define char narrator` | `narrator` 是保留关键字 |
+| label 命名冲突 | 列出所有冲突位置 |
+| 循环 `include` | 打印完整引用链 |
+| 循环继承 | 打印继承链 |
+
+#### 错误处理矩阵
+
+```
+错误类型              开发模式（引擎运行）        发布包
+─────────────────────────────────────────────────────────────
+AxnParseError        终端完整报错 + 停止          编译阶段拦截，不进包
+AxnCompileError      终端完整报错 + 停止          编译阶段拦截，不进包
+AxnWarning           终端显示 + 继续运行          完全静默
+AxnTypeError         终端完整报错 + 继续          完全静默
+assert               执行 + 报错                  剥离
+AxnNameError         终端完整报错 + 停止          错误界面 + crash.log
+AxnJumpError         终端完整报错 + 停止          错误界面 + crash.log
+AxnSaveError         终端完整报错                 错误界面 + crash.log
+AxnInternalError     完整 Python traceback        错误界面 + crash.log
+AxnAssetError        终端完整报错 + 停止          静默 + crash.log
+  └── 图片/立绘      同上                         不渲染 + crash.log
+  └── 音视频         同上                         跳过 + crash.log
+  └── AxnVoiceError  同上                         静默无声 + crash.log
+```
+
+发布包中保留的错误统一走两层处理：
+1. 写入 `crash.log`（开发者事后可查）
+2. 显示对玩家友好的错误界面（引擎提供默认样式，开发者可在 `options_window.apy` 中自定义）
+
+#### `options_window.apy` 错误相关配置
+
+```apy
+engine:
+    strict = false                      # true 时 Warning 升级为报错
+    release_asset_missing = "silent"    # silent / placeholder / error
+    error_report_url = ""               # 自动上报地址，空则不上报
+    locale = "zh"                       # 错误信息语言跟随此设置
+    ignore_multiline_dollar = false     # true 时静默 $ 多行续行警告
+```
+
+#### `$` 行括号续行
+
+从"解析期报错"改为"运行期警告"，开发者选择 ignore 后自行承担后果：
+
+```apy
+$ x = (
+    1 + 2
+)
+```
+
+```
+AxnWarning: [parser] '$' line contains multi-line expression.
+  Bracket continuation is allowed but not recommended.
+  Behavior may be undefined in some contexts.
+  → scene.apy, line 12
+
+Hint: Use a 'python:' block for multi-line expressions.
+  Add 'ignore_multiline_dollar = true' in options_window.apy to suppress this warning.
+```
+
+---
+
+### Lexer
+
+#### 设计约束
+
+**缩进规则：**
+- 同一文件内必须使用统一的缩进单位（空格数量或 Tab），不允许混用
+- 第一次遇到缩进时记录该文件的缩进单位，后续不一致时报错
+- 不限制缩进数量（2、3、4、5 均可），但同一文件必须统一
+- Tab 与空格不允许在同一文件内混用
+- Axn-Editor 默认使用 3 空格缩进
+
+```
+AxnParseError: Inconsistent indentation
+  This file uses 3-space indentation (detected at line 2).
+  → scene.apy, line 8, col 1
+Hint: Use the same indentation unit throughout the file.
+```
+
+**字符串引号：**
+- 只允许双引号 `"`
+- Python 块内不受此限制，单双引号随意
+- Axn-Editor 自动补全只处理双引号
+
+**颜色字面量：**
+- `#rrggbb` 和 `#rrggbbaa` 在 Lexer 层直接识别为 `COLOR` token，不当作注释
+
+#### Token 类型
+
+```python
+from enum import Enum, auto
+
+class TokenType(Enum):
+    # 字面量
+    STRING          = auto()    # "文字"
+    NUMBER          = auto()    # 42, 3.14
+    BOOL            = auto()    # True, False
+    NONE            = auto()    # None
+    COLOR           = auto()    # #ff8800
+
+    # 标识符与关键字
+    IDENTIFIER      = auto()
+
+    # .apy 引擎关键字
+    DEFINE          = auto()
+    CHAR            = auto()
+    EXTENDS         = auto()
+    LABEL           = auto()
+    JUMP            = auto()
+    CALL            = auto()
+    RETURN          = auto()
+    MENU            = auto()
+    CHOICE          = auto()
+    IF              = auto()
+    ELIF            = auto()
+    ELSE            = auto()
+    UNLESS          = auto()
+    MATCH           = auto()
+    SHOW            = auto()
+    HIDE            = auto()
+    SCENE           = auto()
+    CLEAR           = auto()
+    PLAY            = auto()
+    STOP            = auto()
+    PAUSE           = auto()
+    RESUME          = auto()
+    WAIT            = auto()
+    CAMERA          = auto()
+    LAYER           = auto()
+    EXPRESSION      = auto()
+    SAY             = auto()
+    NARRATE         = auto()
+    WITH            = auto()
+    ANIMATION       = auto()
+    TRANSFORM       = auto()
+    PARALLEL        = auto()
+    TRACK           = auto()
+    TRANSLATE       = auto()
+    INCLUDE         = auto()
+    IMPORT          = auto()
+    TEMPLATE        = auto()
+    SCREEN          = auto()
+    GUI             = auto()
+    WINDOW          = auto()
+    SLOT            = auto()
+    STATE           = auto()
+    STYLE           = auto()
+    MIXIN           = auto()
+    THEME           = auto()
+    APPLY           = auto()
+    EMIT            = auto()
+    ON              = auto()
+    FLAG            = auto()
+    CONST           = auto()
+    SET             = auto()
+    CHECKPOINT      = auto()
+    ASSERT          = auto()
+    MODAL           = auto()
+    INPUT           = auto()
+    PYTHON          = auto()    # python: 块关键字
+    NARRATOR        = auto()    # 保留关键字
+    STA             = auto()
+    DYN             = auto()
+    AS              = auto()
+    FOR             = auto()
+    FROM            = auto()
+    IN              = auto()
+
+    # 行首特殊符号
+    DOLLAR          = auto()    # $
+    AT              = auto()    # @（旁白）
+    ARROW           = auto()    # ->
+
+    # 结构符号
+    COLON           = auto()    # :
+    COMMA           = auto()    # ,
+    LPAREN          = auto()    # (
+    RPAREN          = auto()    # )
+    LBRACKET        = auto()    # [
+    RBRACKET        = auto()    # ]
+    EQUALS          = auto()    # =
+    PLUS_EQUALS     = auto()    # +=
+    DOUBLE_COLON    = auto()    # ::（跨文件引用）
+
+    # 布局
+    NEWLINE         = auto()
+    INDENT          = auto()
+    DEDENT          = auto()
+    EOF             = auto()
+
+    # 注释（保留用于 round-trip）
+    COMMENT         = auto()
+
+    # Python 块内容（整体作为字符串保留，不解析内部）
+    PYTHON_BLOCK    = auto()
+```
+
+#### Token 数据结构
+
+```python
+@dataclass
+class Token:
+    type:  TokenType
+    value: Any      # 原始值；STRING 已去引号，NUMBER 已转型
+    raw:   str      # 原始文本，用于 round-trip
+    file:  str
+    line:  int
+    col:   int
+```
+
+---
+
+### Parser（三遍扫描）
+
+#### 第一遍：名字收集
+
+只收集所有 `define` 的名字，不解析字段内容和 `extends` 关系。目标是建立全局名字集合，使第二遍能识别跨文件引用。成本极低，只需识别行首的 `define` 关键字。
+
+#### 第二遍：继承图与符号表
+
+扫描所有 `define extends` 关系，建立继承有向图，拓扑排序确定解析顺序。检测循环继承并在此阶段报错。同时建立全局符号表（名字 → 类型），供第三遍使用。
+
+#### 第三遍：完整解析
+
+按拓扑顺序完整解析所有文件，展开继承字段，构建完整 AST。行首遇到已知角色名走对话路径，否则走指令路径。label 冲突检查在此阶段完成。`sta label` 的静态检查也在第三遍完成——遇到 `$` 块或 `python:` 块时立即报错，不留到编译器阶段。
+
+#### 增量缓存
+
+对未修改文件跳过第三遍，直接使用缓存 AST。使用 **mtime + hash 双重校验**：
+
+- mtime 未变：直接认为有效，跳过 hash 计算
+- mtime 变了：计算 SHA-256 hash，hash 也变了才视为需要重新解析
+- 缓存损坏（pickle 读取失败）：视为无效，重新解析
+
+缓存文件存放在项目的 `.axncache/` 目录，构建发布包时不打入包内。
+
+#### 注释归属规则
+
+与文档 `.apy` 脚本格式章节中的规则一致：
+
+- **行内注释**（`代码  # 注释`）：Lexer 阶段归属同行节点
+- **行间注释**（单独占行）：Parser 阶段按缩进层级归属父节点，空行切断与下方节点的联系
+- 顶层行间注释（无父节点）作为独立注释节点存在
+- 所有注释以 `COMMENT` token 保留，不丢弃，保证 round-trip fidelity
+
+#### AST 节点基类
+
+所有节点携带位置信息和注释归属：
+
+```python
+@dataclass
+class ASTNode:
+    file:     str
+    line:     int
+    col:      int
+    comments: list[CommentNode] = field(default_factory=list)
+
+@dataclass
+class CommentNode(ASTNode):
+    content: str
+    inline:  bool   # True = 行内注释，False = 行间注释
+```
+
+#### 三遍扫描组装入口
+
+```python
+class Parser:
+    def __init__(self, files: dict[str, str]):
+        # files: filename → source 字符串
+        self.files  = files
+        self.lexed: dict[str, list[Token]] = {}
+
+    def parse_all(self) -> dict[str, FileNode]:
+        # Lex 所有文件
+        for filename, source in self.files.items():
+            lexer = Lexer(source, filename)
+            self.lexed[filename] = lexer.tokenize()
+
+        # 第一遍
+        first       = FirstPass(self.lexed)
+        known_names = first.run()
+
+        # 第二遍
+        second                    = SecondPass(self.lexed, known_names)
+        parse_order, symbol_table = second.run()
+
+        # 第三遍（含增量缓存）
+        third = ThirdPass(self.lexed, symbol_table, parse_order)
+        return third.run()
+```
+
+#### 关键设计决策（Parser）
+
+**`sta label` 静态检查在第三遍完成**：遇到 `$` 块或 `python:` 块时立即报错，不留到编译器阶段，保证"sta 声明即保证"的语义在最早阶段兑现。
+
+**第三遍遇到第一个错误即停止**：不尝试继续收集后续错误，避免级联错误产生误导性的噪音。
+
+**`define` 只允许出现在文件顶层**：保证第一、二遍扫描无需理解嵌套结构，各遍成本极低。
+
+**label 冲突在第三遍统一检查**：`label_table` 跨文件共享，第三遍每解析一个 label 就写入并检查冲突，确保任意文件顺序下均能检测到。
