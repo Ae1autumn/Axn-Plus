@@ -2933,6 +2933,243 @@ def build_widget(node: ASTNode, ctx: BuildContext) -> Widget:
 
 ---
 
+## 项目结构
+
+### 用户项目目录
+
+引擎强制要求两个文件存在，其余完全自由：
+
+```
+Project_name/
+   flow.apy               # 入口文件（强制）
+   options_window.apy     # 引擎配置 + 预构建 UI（强制）
+```
+
+推荐结构（`axn init` 生成的默认骨架）：
+
+```
+Project_name/
+   flow.apy
+   options_window.apy
+   main/
+      scripts/
+         script.apy
+      image/
+         gui/             # 代码 UI 所需图片资源（可为空）
+      audio/
+      video/
+      font/
+```
+
+`main/` 目录不是强制要求。小项目完全可以只用 `flow.apy` + `options_window.apy` 实现整个项目。
+
+#### `flow.apy`
+
+入口文件，推荐用法是只做顶层流程调度，用 `call` 把各章节分发到独立文件：
+
+```apy
+label start:
+    call chapter1.apy::prologue
+    call chapter2.apy::chapter_two
+    ...
+```
+
+引擎启动时扫描所有 `.apy` 文件，label 全局可见，支持两种 `call` 方式：
+
+```apy
+call chapter_one              # 全局符号表查找
+call chapter2.apy::chapter_one  # 显式路径引用（包含 :: 时触发）
+```
+
+两种方式可混用，显式路径永远优先。label 命名冲突由开发者自行管理，引擎启动时报错提示。显式路径引用的文件或 label 不存在时，同样在启动时报错，不等到运行时。
+
+#### `options_window.apy`
+
+引擎配置（文件底部）+ 用 Pygame 代码绘制的预构建 UI（标题画面、菜单、对话框等）。UI 部分不依赖图片资源，完全由代码实现。
+
+#### 资源引用规则
+
+有 `main/` 目录时，按指令类型自动在对应子目录查找，文件名不需要扩展名：
+
+```apy
+show home          # 在 main/image/ 下查找 home.*
+play music rain    # 在 main/audio/ 下查找 rain.*
+```
+
+无 `main/` 目录时，需要提供相对于项目根目录的完整路径：
+
+```apy
+show "path/to/home.png"
+play music "path/to/rain.ogg"
+```
+
+**支持的文件格式：**
+
+| 类型 | 格式 |
+|------|------|
+| 图片 | png, jpg, webp |
+| 音频 | ogg, mp3, wav |
+| 视频 | mp4, webm |
+| 字体 | ttf, otf |
+
+不在支持列表内的格式，或同目录下存在同名不同扩展名的文件，必须带完整扩展名：
+
+```apy
+play audio "rain.avi"       # 不支持的格式，需要扩展名（并引入对应编解码器）
+show "home.jpg"             # 同目录下同时有 home.png 和 home.jpg 时消歧义
+```
+
+同目录下存在同名不同扩展名文件且未指定扩展名时，引擎启动时报错，不自动选择。
+
+#### `show` 类型推断
+
+`show` 后跟裸名字时，引擎查符号表推断类型，不需要子命令：
+
+```apy
+show home          # 符号表：图片文件 → 场景背景
+show eileen        # 符号表：define char → 立绘
+show hud           # 符号表：gui 定义 → UI 控件
+show MyEffect()    # 符号表：自定义可显示类 → 自定义对象
+```
+
+自定义可显示类（继承 `AnimatedSprite` 的 Python 类）必须在 `.apy` 文件中显式声明才能进入符号表：
+
+```apy
+import MyEffect from "effects/my_effect.py"
+import LivePortrait from "characters/live_portrait.py"
+```
+
+符号表里同一名字对应多种类型时，引擎启动时报错，要求重命名消歧义。
+
+### 引擎目录结构
+
+```
+axn_plus/
+   __init__.py
+   engine.py                 # AxnEngine 主类，对外 API 入口
+   core/
+      __init__.py
+      runner.py              # .apy 执行运行时
+      store.py               # Store / persistent 实现
+      scheduler.py           # 并行轨道、wait for、动画调度
+      checkpoint.py          # 存档 / 读档逻辑
+   parser/
+      __init__.py
+      lexer.py
+      parser.py              # 三遍扫描实现
+      ast_nodes.py           # 所有 AST node dataclass
+      error.py               # AxnParseError 等
+   backends/
+      __init__.py
+      base.py                # AbstractBackend 接口
+      pygame/
+         __init__.py
+         backend.py
+         widget_tree.py      # constraint-based layout
+         renderer.py
+      qt/
+         __init__.py
+         backend.py
+         bridge.py           # QtBridge 信号桥
+         window.py
+   ui/
+      __init__.py
+      style.py               # theme / mixin / style 解析与优先级合并
+      slot.py                # 插槽系统
+      widgets/
+         __init__.py
+         primitives.py       # text / image / rect / canvas
+         interactive.py      # button / toggle / slider 等
+         layout.py           # vstack / hstack / grid / pin 等
+   asset/
+      __init__.py
+      loader.py              # 资源加载、缓存
+      audio.py               # play / pause / stop / 多通道管理
+      video.py
+   apy/
+      __init__.py
+      stdlib.py              # 引擎内置指令实现
+      transition.py          # 内置过渡效果
+      transform.py           # keyframe 动画系统
+      saveable.py            # @saveable / Saveable 基类
+   cli/
+      __init__.py
+      init.py                # axn init，生成项目骨架
+      build.py               # axn build，打包发布
+      run.py                 # axn run，开发期启动
+```
+
+`parser/` 独立，供 Axn-Editor 的 LSP 插件直接复用，不与运行时耦合。`core/` 中无任何 pygame 或 Qt import，后端通过 `backends/base.py` 的抽象接口交互。`cli/` 提供 `axn init` / `axn run` / `axn build` 三个子命令。
+
+---
+
+## 多通道音频
+
+### 通道模型
+
+引擎内置四个固定通道，同时支持用户自定义通道：
+
+| 通道 | 对应指令 | 典型用途 |
+|------|---------|---------|
+| `music` | `play music` | 背景音乐 |
+| `sound` | `play sound` | 音效 |
+| `voice` | `play voice` | 语音 |
+| `ambient` | `play ambient` | 环境音 |
+
+四个内置通道名为保留关键字，不允许自定义通道使用相同名称，引擎启动时检查并报错。
+
+`play music` 等价于 `play audio (channel="music")`，内置通道是语法糖。
+
+### 默认行为：串行队列
+
+同一通道内默认串行，新的 `play` 加入队列，等前一个结束再播：
+
+```apy
+play music "bgm/morning.ogg"
+play music "bgm/tension.ogg"   # 排队，morning 结束后播
+```
+
+队列长度默认上限为 16，超出时输出警告。可在 `options_window.apy` 中配置。
+
+### 并行：使用自定义通道
+
+不同通道之间天然并行，通过自定义通道实现同类音频的并行播放：
+
+```apy
+channel create bg_layer         # 推荐先声明
+channel create ambient_layer
+
+play music "bgm/morning.ogg" (channel="bg_layer")
+play music "bgm/rain.ogg" (channel="ambient_layer")   # 与 bg_layer 同时播放
+```
+
+也可以不预先声明直接在 `play` 里创建，但推荐先声明使依赖关系可见。
+
+### `stop` 行为
+
+```apy
+stop music              # 停止当前播放，队列保留
+stop music (clear)      # 停止当前播放并清空队列
+```
+
+推荐显式使用 `stop` 而不是依赖新 `play` 打断，语义更清晰。
+
+### 存档与读档
+
+| 通道 | 读档行为 |
+|------|---------|
+| `music` | 静默恢复，保留播放进度、队列、音量状态 |
+| `ambient` | 静默恢复，保留播放进度、队列、音量状态 |
+| `sound` | 读档时清空，不恢复 |
+| `voice` | 读档时清空，不恢复 |
+| 自定义通道 | 默认静默恢复，可在 `options_window.apy` 中覆盖 |
+
+`sound` 和 `voice` 不恢复的原因：短音效和语音通常与具体动作绑定，读档后对应动作已经过去，恢复没有意义。
+
+静默恢复保存的内容：当前播放文件名、播放进度（时间戳）、队列里剩余的待播项、通道的音量和淡入淡出状态。
+
+---
+
 ## 不是什么
 
 - 不是 Ren'Py 的分支或 fork
