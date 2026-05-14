@@ -537,6 +537,70 @@ anim.cancel()    # 立即停止动画
 
 `animation` 块内只允许引擎指令（`show`、`hide`、`camera`、`play`、`wait` 等），不允许 Python 块、对话行、`jump`、`menu`。目的是保证 GUI 能完整解析，也防止演出片段携带业务逻辑。
 
+**`animation` 参数化**
+
+`animation` 块支持函数签名风格参数，和 `label` 保持一致：
+
+```apy
+animation char_enter(char, position="center", duration=0.3):
+    show char position 0.0
+    camera move 1.1 0.5 (easing=ease_out)
+    wait for all
+
+animation char_exit(char, duration=0.3):
+    hide char duration (exit=fadeout)
+    wait for all
+```
+
+调用时传入参数：
+
+```apy
+call animation char_enter(eileen, "left")
+call animation char_enter(eileen, "left") as anim
+call animation char_enter(eileen)          # 使用默认参数
+```
+
+参数类型限制：只允许角色名、位置关键字、数值、字符串字面量，不允许传入 Python 表达式——`animation` 块内不允许 Python，参数也不应该是 Python 表达式，否则 GUI 无法解析调用点。需要动态参数时退回 `label` + Python 块处理。
+
+**`show` 不阻塞执行流**
+
+`show eileen center (transform=shake_x)` 之后立即推进到下一行，transform 在后台运行，对话行不等 transform 完成。需要等待时显式使用 `as` + `wait for`：
+
+```apy
+show eileen center (transform=shake_x) as anim_shake   # 单行 show + as，合法
+wait for anim_shake
+eileen: "你好。"    # shake_x 完成后才显示对话
+```
+
+不等待时 transform 跑着，对话同时出现，两者互不阻塞。`as` 在单行 `show` 上与并行写法上均有效。
+
+**前台动画与后台动画**
+
+`transform` 按 `repeat` 类型自动区分前台/后台身份，不需要用户额外声明：
+
+- **前台动画**：`repeat 1` / `repeat N`，参与 `wait for all` 的等待判断
+- **后台动画**：`repeat forever` / `repeat forever pingpong`，不参与 `wait for all`，持续运行直到对象被 `hide` 或显式 `transform=none`
+
+```apy
+animation eileen_enter:
+    show eileen center (transform=[complex_enter, breathe])
+    # complex_enter: repeat 1       → 前台，参与等待
+    # breathe:       repeat forever → 后台，不参与等待
+    wait for all    # 等 complex_enter 完成即推进，breathe 继续跑
+```
+
+边界情况：`wait for all` 时若所有 transform 均为后台动画（无前台动画），立即满足，debug 模式输出警告：
+
+```
+AxnWarning: 'wait for all' has no finite transforms to wait for.
+  All transforms are 'repeat forever'. Did you mean to use 'wait'?
+  Line 3, eileen_enter animation block.
+```
+
+**`transform` 归属对象，不归属 track**
+
+`scheduler.py` 维护全局 transform 注册表，key 为显示对象 id，value 为当前运行的 transform 列表。`parallel` track 的调度与 transform 调度完全独立，互不感知。track 结束时不自动停止该 track 内 `show` 触发的 transform——transform 的生命周期跟对象走，不跟 track 走，`hide` 对象时才停止其所有附属 transform。此规则在 `parallel` 场景下与单轨道场景完全一致。
+
 **并行轨道（parallel / track）**
 
 `parallel` 块内的 track 分两类，用显式标记区分：
@@ -1293,7 +1357,13 @@ input disable:
 
 **`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 与 interactive track 共存时解析器直接报错——interactive track 等待用户点击期间，`wait=any` 触发推进的时机不可预测，会产生输入状态污染，此组合没有合理的使用场景。需要提前推进时改用 `wait=none` + 手动 `wait for`。`wait=none` 下使用 `wait for <interactive_track>` 时，输入路由规则不变：interactive track 仍然独占用户输入，`wait for` 是纯被动观察者，只轮询 `track.done`，不接管输入；用户点击推进对话 → track 内部前进 → track 完成 → `wait for` 自然满足。此设计消除了对话行与并行执行之间的交互模型歧义。
 
-**`with store` 真正的原子语义**：只允许顶层 `store` 变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问、属性访问、方法调用或任何流程控制。违反时解析期报错，不静默通过。原子性边界明确：快照和回滚只针对顶层 key，`dict`/`list` 子项的内部修改不在保证范围内——需要修改子项时，先在 `python:` 块里构造好新值，再用 `with store` 整体赋值。由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低，"原子性"是有实现保证的语义，不是注释。快照保存的是对象引用而非深拷贝——回滚保证 `store` 顶层 key 指向执行前的对象，不保证该对象内容的深度一致性；在纯 `.apy` 工作流下此边界不可见，通过 Python 直接持有 `store` 变量引用并原地修改时需开发者自行注意。
+**`with store` 真正的原子语义**：只允许顶层 `store` 变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问、属性访问、方法调用或任何流程控制。违反时解析期报错，不静默通过。原子性边界明确：快照和回滚只针对顶层 key，`dict`/`list` 子项的内部修改不在保证范围内——需要修改子项时，先在 `python:` 块里构造好新值，再用 `with store` 整体赋值。由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低，"原子性"是有实现保证的语义，不是注释。快照保存的是对象引用而非深拷贝——回滚保证 `store` 顶层 key 指向执行前的对象，不保证该对象内容的深度一致性；在纯 `.apy` 工作流下此边界不可见，通过 Python 直接持有 `store` 变量引用并原地修改时需开发者自行注意。**debug 模式外部引用检测**：`with store` 执行前，对涉及的每个 key 调用 `sys.getrefcount()` 检查引用计数，计数超出预期值时输出警告，指明变量名和位置，不阻止执行。release 模式下此检测完全跳过，零开销。
+
+```
+AxnWarning: 'relationship' has external references.
+  Rollback will restore the store key, but not the object's contents.
+  (with store, line 12, scene.apy)
+```
 
 **`flag` debug 模式类型检查**：有类型注解的变量在 debug 模式下通过 `Store.__setitem__` 钩子即时验证类型，错误信息包含声明位置。release 模式下 `Store` 退化为普通 `dict`，零开销。避免类型错误拖到存档时才暴露。
 
@@ -1302,6 +1372,22 @@ input disable:
 **`on key` 组合键**：字符串格式为 `"修饰键+key"`，修饰键小写，顺序固定为 `ctrl → shift → alt → key`，用 `+` 连接（如 `"ctrl+s"`、`"shift+f5"`）。解析器在启动时验证格式合法性。
 
 **`camera reset` 清除 follow 状态**：`camera reset` 同时清除 follow 状态，恢复静止镜头。reset 后需要继续 follow 须显式重新声明，避免隐式状态残留。
+
+**`animation` 参数化**：`animation` 块支持函数签名风格参数，和 `label` 保持一致。参数类型限制为角色名、位置关键字、数值、字符串字面量，不允许 Python 表达式——保证 GUI 能完整解析调用点。需要动态参数时退回 `label` + Python 块处理。
+
+**`show` 永不阻塞执行流**：`show` 指令（含 `transform` 参数）之后立即推进到下一行，transform 在后台运行。需要等待时显式使用 `as` + `wait for`。`as` 在单行 `show` 和并行写法上均有效。
+
+**前台动画与后台动画**：`transform` 按 `repeat` 类型自动区分身份，不需要用户额外声明。`repeat 1` / `repeat N` 为前台动画，参与 `wait for all`；`repeat forever` / `repeat forever pingpong` 为后台动画，不参与 `wait for all`，持续运行直到对象被 `hide` 或 `transform=none`。`wait for all` 时若无前台动画立即满足，debug 模式输出警告。
+
+**`transform` 归属对象不归属 track**：`scheduler.py` 维护全局 transform 注册表，key 为显示对象 id。`parallel` track 调度与 transform 调度完全独立，track 结束不停止其内 `show` 触发的 transform，`hide` 对象时才停止所有附属 transform。此规则在 `parallel` 场景下与单轨道场景完全一致。
+
+**存档分层快照策略**：显示状态按"可序列化层"（直接快照）和"不可序列化层"（`AnimatedSprite`）分层处理，不做全量快照也不做脚本重放。`AnimatedSprite` 通过 `@restorable` 装饰器提供 `__snapshot__` / `__restore__` 扩展点，不加 `@restorable` 时以初始状态重建并输出警告。`@restorable` 与 `@saveable` 职责不重叠：前者处理显示对象重建，后者处理 `store` 游戏数据序列化。
+
+**`transform` 读档恢复**：前台动画（`repeat 1` / `repeat N`）读档不恢复；后台动画（`repeat forever`）读档恢复但从头开始播，存档只保存 transform 名称列表，不保存进度；`AnimatedSprite` 走 `@restorable` 机制。
+
+**`parallel` 块与存档的边界**：`checkpoint` 禁止出现在 `parallel` 块内（解析期报错）；`checkpoint` 须在所有 track 完全结束后执行，否则运行时跳过并警告；`parallel` 执行期间自动存档挂起，手动存档挂起并显示 UI 提示，两者均在块完全结束后触发。
+
+**`on enter` 读档触发行为**：默认（`restore=auto`）读档后不重新触发，依赖状态快照恢复；`restore=always` 读档后重新触发，开发者自行保证幂等性；`restore=never` 读档后永不触发。`restore=always` 时 debug 模式输出幂等性提醒。
 
 ---
 
@@ -1352,6 +1438,117 @@ GUI 编辑和代码编辑之间的**双向同步**是核心设计约束：
 - **`persistent`**：跨存档的全局数据（画廊解锁、总游玩时长等），游戏退出时自动保存
 
 两者遵守相同的序列化规则。
+
+### 存档内容清单
+
+存档保存以下状态：
+
+**执行位置**：当前执行到哪一行（label + 行号）。call 栈在存档时丢弃，读档后以 checkpoint 下一行作为新的顶层执行起点。
+
+**`store` 状态**：所有游戏变量，包括 `flag` 块声明的变量和通过 `$` 直接写入的变量。
+
+**显示状态**（分层快照，见下文）：
+- 每个角色当前可见性、位置、表情状态（`states` 当前值，`layers` 各层当前值）
+- 当前背景（`scene`）
+- 各层（`sprite`、`effect` 等）上的所有元素及自定义层列表
+- camera 状态（zoom、offset、angle、follow 目标）
+- `repeat forever` 后台 transform 列表（只保存名称，不保存进度）
+
+**音频状态**：各通道当前播放文件、进度、队列、音量及淡入淡出状态。`music` / `ambient` 读档静默恢复，`sound` / `voice` 读档时清空不恢复。
+
+**`persistent`**：跨存档全局数据，独立处理。
+
+### 显示状态重建：分层快照
+
+引擎采用**分层快照**策略重建显示状态，不做全量快照，也不做脚本重放。
+
+**可序列化层**（直接快照）：角色可见性、位置、表情状态、当前背景、各层元素列表、camera 状态。这些全是基础类型或引擎内部对象，读档后直接重建显示状态，不重新执行脚本。
+
+**不可序列化层**（`AnimatedSprite` Python 对象）：引入 `@restorable` 装饰器，专门处理读档后的重建：
+
+```python
+@restorable
+class LivePortrait(AnimatedSprite):
+    def __init__(self, char):
+        self.char = char
+        self.frames = char.load_frames()
+        self.timer = 0.0
+
+    def __snapshot__(self):
+        # 存档时调用，只保存必要的重建数据
+        return {"timer": self.timer}
+
+    def __restore__(self, data):
+        # 读档后调用，data 是 __snapshot__ 返回的数据
+        self.timer = data["timer"]
+        # frames 不需要存，重新从 char 加载即可
+```
+
+不加 `@restorable` 的 `AnimatedSprite` 读档后以初始状态重建，引擎 debug 模式输出警告：
+
+```
+AxnWarning: 'LivePortrait' is not @restorable.
+  It will be restored to its initial state after loading.
+  Consider adding @restorable and implementing __snapshot__ / __restore__.
+```
+
+`@restorable` 与现有的 `@saveable` / `Saveable` 设计语言一致，职责不重叠：`@saveable` 处理 `store` 内的游戏数据序列化，`@restorable` 处理显示对象的重建。
+
+### `transform` 读档恢复策略
+
+- **前台动画**（`repeat 1` / `repeat N`）：读档时不恢复。这类动画是演出过程的一部分，读档后演出已经过去，强行恢复到中途状态视觉上更奇怪。
+- **后台动画**（`repeat forever` / `repeat forever pingpong`）：恢复，但从头开始播，不保存进度。`breathe` 这类循环动画从哪个帧开始都不影响视觉连贯性，没必要保存精确进度。存档只保存 transform 名称列表，读档后对每个可见对象重新 apply 对应的 transform，从头开始。
+- **`AnimatedSprite`**：走 `@restorable` 机制，由开发者决定恢复策略。
+
+### `parallel` 块与存档
+
+**`checkpoint` 禁止出现在 `parallel` 块内**：解析期报错。`parallel` 执行中途其他 track 的状态无法完整快照，读档后无法正确重建。
+
+```
+AxnParseError: 'checkpoint' is not allowed inside a 'parallel' block.
+  Move 'checkpoint' to after the parallel block completes.
+  Line 5, scene.apy
+```
+
+**`checkpoint` 须在 `parallel` 块完全结束后执行**：`parallel` 启动后，直到所有 track 都完成（包括 `wait=none` 下未被 `wait for` 等待的 track），才允许 `checkpoint`。解析期无法静态检测此场景，改为运行时检测——`checkpoint` 执行时若有任何 `parallel` 块尚未完全结束，跳过存档并输出警告：
+
+```
+AxnWarning: 'checkpoint' skipped: a 'parallel' block has not fully completed.
+  Ensure all tracks finish before placing a 'checkpoint'.
+  Line 8, scene.apy
+```
+
+**自动存档**：`parallel` 块执行期间禁用自动存档，块完全结束后恢复。行为对用户透明，不需要任何语法支持。
+
+**手动存档**：存档请求挂起，`parallel` 块完全结束后自动执行。挂起期间 UI 显示"存档将在当前演出完成后执行"的提示。可在 `options_window.apy` 中配置改为拒绝行为（弹提示后丢弃请求）。
+
+### `on enter` 读档后的触发行为
+
+读档后引擎不重新触发 `on enter`，依赖显示状态快照直接重建场景（音频状态同样通过快照恢复，不需要重新触发 `on enter` 里的 `play music`）。
+
+对于 `on enter` 块内有额外副作用的场景，支持 `restore` 模式声明：
+
+```apy
+on enter chapter2_start (restore=auto):
+    play music "bgm/chapter2.ogg"   # 纯副作用，读档后音频状态自动恢复，不需要重触发
+
+on enter chapter2_start (restore=always):
+    play music "bgm/chapter2.ogg"
+    $ analytics.track("chapter2_enter")   # 有额外副作用，读档后也要触发
+```
+
+| `restore` 值 | 行为 |
+|---|---|
+| `auto`（默认） | 读档后不重新触发，依赖状态快照恢复 |
+| `always` | 读档后重新触发，开发者自行保证幂等性 |
+| `never` | 读档后永不触发 |
+
+`restore=always` 时引擎 debug 模式输出提示，提醒开发者确保幂等性：
+
+```
+AxnWarning: 'on enter chapter2_start' has restore=always.
+  Ensure the handler is idempotent to avoid side effects on load.
+```
 
 ### 序列化规则
 
@@ -1427,6 +1624,8 @@ Axn-Plus 的 UI 系统按后端分为两条路线，Pygame 后端下细分为两
 **不做 `textbutton` / `imagebutton` 这种分类。** Ren'Py 的控件体系把内容类型混进了控件类型，导致组合场景没有标准写法。Axn-Plus 的内置控件只定义结构和交互语义，内容通过 `slot children` 填充，样式通过样式系统注入。
 
 **控件本身不预设视觉。** `button` 不携带任何默认背景或颜色，`style button` 全局推导注入项目默认样式，不写则自然是素的。调用点不允许内联样式属性，需要临时覆盖时先定义 `mixin`，再通过 `style=` 具名参数传入。
+
+**兼容写法**：`button` 的 `style=` 参数也接受内联样式属性，但不推荐。内联样式绕过样式系统的优先级链，产生的覆盖冲突由开发者自行负责。推荐写法始终是先定义 `mixin`，再通过 `style=` 传入。GUI 编辑器对调用点使用内联样式时以黄色警告标注"建议改用 mixin"，但不阻止保存。
 
 **三条样式传递路径：**
 
@@ -3056,9 +3255,10 @@ axn_plus/
    parser/
       __init__.py
       lexer.py
-      parser.py              # 三遍扫描实现
-      ast_nodes.py           # 所有 AST node dataclass
+      ast_nodes.py           # 所有 AST node dataclass，两层 parser 共享
       error.py               # AxnParseError 等
+      full_parser.py         # 三遍扫描，引擎启动用，正确性优先
+      incremental_parser.py  # 第一遍 + 局部重解析，LSP 用，容错优先，允许返回不完整 AST
    backends/
       __init__.py
       base.py                # AbstractBackend 接口
@@ -3099,7 +3299,7 @@ axn_plus/
       run.py                 # axn run，开发期启动
 ```
 
-`parser/` 独立，供 Axn-Editor 的 LSP 插件直接复用，不与运行时耦合。`core/` 中无任何 pygame 或 Qt import，后端通过 `backends/base.py` 的抽象接口交互。`cli/` 提供 `axn init` / `axn run` / `axn build` 三个子命令。
+`parser/` 独立，供 Axn-Editor 的 LSP 插件直接复用，不与运行时耦合。LSP 插件复用 `parser/incremental_parser.py`，不使用全量三遍扫描器，保证实时补全响应速度。两层实现共享 `lexer.py` 和 `ast_nodes.py`。`core/` 中无任何 pygame 或 Qt import，后端通过 `backends/base.py` 的抽象接口交互。`cli/` 提供 `axn init` / `axn run` / `axn build` 三个子命令。
 
 ---
 
