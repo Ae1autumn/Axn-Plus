@@ -1357,13 +1357,7 @@ input disable:
 
 **`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 与 interactive track 共存时解析器直接报错——interactive track 等待用户点击期间，`wait=any` 触发推进的时机不可预测，会产生输入状态污染，此组合没有合理的使用场景。需要提前推进时改用 `wait=none` + 手动 `wait for`。`wait=none` 下使用 `wait for <interactive_track>` 时，输入路由规则不变：interactive track 仍然独占用户输入，`wait for` 是纯被动观察者，只轮询 `track.done`，不接管输入；用户点击推进对话 → track 内部前进 → track 完成 → `wait for` 自然满足。此设计消除了对话行与并行执行之间的交互模型歧义。
 
-**`with store` 真正的原子语义**：只允许顶层 `store` 变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问、属性访问、方法调用或任何流程控制。违反时解析期报错，不静默通过。原子性边界明确：快照和回滚只针对顶层 key，`dict`/`list` 子项的内部修改不在保证范围内——需要修改子项时，先在 `python:` 块里构造好新值，再用 `with store` 整体赋值。由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低，"原子性"是有实现保证的语义，不是注释。快照保存的是对象引用而非深拷贝——回滚保证 `store` 顶层 key 指向执行前的对象，不保证该对象内容的深度一致性；在纯 `.apy` 工作流下此边界不可见，通过 Python 直接持有 `store` 变量引用并原地修改时需开发者自行注意。**debug 模式外部引用检测**：`with store` 执行前，对涉及的每个 key 调用 `sys.getrefcount()` 检查引用计数，计数超出预期值时输出警告，指明变量名和位置，不阻止执行。release 模式下此检测完全跳过，零开销。
-
-```
-AxnWarning: 'relationship' has external references.
-  Rollback will restore the store key, but not the object's contents.
-  (with store, line 12, scene.apy)
-```
+**`with store` 真正的原子语义**：只允许顶层 `store` 变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问、属性访问、方法调用或任何流程控制。违反时解析期报错，不静默通过。原子性边界明确：快照和回滚只针对顶层 key，`dict`/`list` 子项的内部修改不在保证范围内——需要修改子项时，先在 `python:` 块里构造好新值，再用 `with store` 整体赋值。由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低，"原子性"是有实现保证的语义，不是注释。快照保存的是对象引用而非深拷贝——回滚保证 `store` 顶层 key 指向执行前的对象，不保证该对象内容的深度一致性；在纯 `.apy` 工作流下此边界不可见，通过 Python 直接持有 `store` 变量引用并原地修改时需开发者自行注意。外部引用检测不做运行时实现（`sys.getrefcount()` 不可靠，`gc.get_referrers()` 有 GC 暂停开销），此边界通过文档说明清楚即可。
 
 **`flag` debug 模式类型检查**：有类型注解的变量在 debug 模式下通过 `Store.__setitem__` 钩子即时验证类型，错误信息包含声明位置。release 模式下 `Store` 退化为普通 `dict`，零开销。避免类型错误拖到存档时才暴露。
 
@@ -2994,7 +2988,38 @@ Qt 主线程（Qt 事件循环 + 所有 Qt 对象的生命周期）
 
 #### Qt 信号桥实现
 
-**增量 UICommand 模型**：信号桥不传递全量 UI 状态快照，而是传递本帧产生的变更指令列表（`list[UICommand]`）。原因：60fps 下哪怕只有一个字在打字机效果里逐字更新，全量 `to_dict()` 每帧都会序列化整棵控件树，开销不必要；全量 dict 跨线程传递还需要保证无共享可变引用，否则游戏线程继续 tick 时可能修改已发出的数据。`UICommand` 是不可变 dataclass，天然不共享引用，无需额外保护。
+**增量 UICommand 模型**：信号桥不传递全量 UI 状态快照，而是传递本帧产生的变更指令列表（`list[UICommand]`）。
+
+**UICommand 类型安全**：`UICommand` 是 frozen dataclass，保证自身不可变，但 `value: Any` 字段如果传入可变对象（如 `list`），游戏线程继续修改该对象时 Qt 主线程会读到被修改后的数据，产生竞态。通过 `__post_init__` 白名单检查解决：
+
+```python
+_SAFE_TYPES = (int, float, str, bool, bytes, type(None), tuple)
+
+@dataclass(frozen=True)
+class UICommand:
+    kind:   str
+    target: str
+    value:  Any
+
+    def __post_init__(self):
+        if __debug__:           # release 模式 __debug__ 为 False，自动跳过，零开销
+            _assert_safe(self.value)
+
+def _assert_safe(obj: Any, depth: int = 0):
+    if depth > 8:
+        return
+    if isinstance(obj, _SAFE_TYPES):
+        if isinstance(obj, tuple):
+            for item in obj:
+                _assert_safe(item, depth + 1)
+    else:
+        raise AxnInternalError(
+            f"UICommand.value contains unsafe type: {type(obj).__name__}. "
+            f"Only immutable primitives and tuples are allowed."
+        )
+```
+
+debug 模式下任何把可变对象塞进 `UICommand` 的地方立即报 `AxnInternalError`，不等到竞态出现时才发现。原因：60fps 下哪怕只有一个字在打字机效果里逐字更新，全量 `to_dict()` 每帧都会序列化整棵控件树，开销不必要；全量 dict 跨线程传递还需要保证无共享可变引用，否则游戏线程继续 tick 时可能修改已发出的数据。`UICommand` 是不可变 dataclass，天然不共享引用，无需额外保护。
 
 ```python
 from __future__ import annotations
@@ -3252,6 +3277,7 @@ axn_plus/
       store.py               # Store / persistent 实现
       scheduler.py           # 并行轨道、wait for、动画调度
       checkpoint.py          # 存档 / 读档逻辑
+      hot_reload.py          # HotReloader，文件监听 + 分级重载
    parser/
       __init__.py
       lexer.py
@@ -3547,6 +3573,19 @@ Hint: Use a 'python:' block for multi-line expressions.
 
 #### 设计约束
 
+**`tolerant` 模式（LSP 专用）：**
+
+Lexer 支持 `tolerant` 参数，全量 parser 默认关闭，LSP 增量 parser 开启：
+
+```python
+class Lexer:
+    def __init__(self, source: str, filename: str, tolerant: bool = False): ...
+```
+
+`tolerant=True` 时，遇到非法字符不抛出 `AxnParseError`，改为插入 `ERROR` token 并跳过继续扫描。增量 parser 遇到 `ERROR` token 时跳到下一个安全点（下一个 `NEWLINE` + `DEDENT` 归零）继续解析，返回部分 AST。这保证用户正在输入到一半的代码不会导致整个文件的补全失效。
+
+两层 parser 共享 `lexer.py` 和 `ast_nodes.py`，通过 `tolerant` 参数区分行为，不维护两套 Lexer 实现。
+
 **缩进规则：**
 - 同一文件内必须使用统一的缩进单位（空格数量或 Tab），不允许混用
 - 第一次遇到缩进时记录该文件的缩进单位，后续不一致时报错
@@ -3568,6 +3607,14 @@ Hint: Use the same indentation unit throughout the file.
 
 **颜色字面量：**
 - `#rrggbb` 和 `#rrggbbaa` 在 Lexer 层直接识别为 `COLOR` token，不当作注释
+
+**容错模式（`tolerant`）：**
+- Lexer 支持 `tolerant: bool` 构造参数，默认 `False`
+- `tolerant=False`：遇到非法字符或未闭合结构立即抛 `AxnParseError`，用于引擎启动的全量三遍扫描，正确性优先
+- `tolerant=True`：遇到错误跳过当前字符，插入 `ERROR` token 后继续，用于 LSP 增量解析器，容错优先
+- 增量解析器收到含 `ERROR` token 的流后，跳到下一个安全点（下一个 `NEWLINE` + `DEDENT` 归零）继续解析，返回部分 AST
+- 目的：用户在编辑器内输入到一半时，LSP 仍能为剩余部分提供补全和语法高亮，不因单行残缺导致整个文件失效
+- 两层实现共享同一个 `Lexer` 类，`tolerant` 参数决定错误处理策略，不维护两套实现
 
 #### Token 类型
 
@@ -3793,6 +3840,29 @@ class Parser:
 - **CompiledChunk**：单个 `.apy` 文件的编译产物，包含该文件所有 label、animation、on_hook
 - **CompiledProject**：所有文件的编译产物，VM 直接使用；包含全局 label 索引、define 表、flag 注册表、const 表
 
+核心数据结构骨架：
+
+```python
+@dataclass
+class CompiledLabel:
+    name:         str            # label 名，热重载匹配用，不可省略
+    filename:     str            # 来源文件，错误定位 + 热重载查询用
+    instructions: list[Instruction]
+    constants:    list[Any]      # 常量池，可哈希对象自动去重
+    params:       list[str]      # label 参数名列表
+
+@dataclass
+class Instruction:
+    opcode:   OpCode
+    operand:  Any                # 常量池索引或直接值
+    line:     int                # 源码行号
+    filename: str                # 源码文件名
+```
+
+**`CompiledLabel.name` 是必填字段**：热重载时通过名字匹配正在执行的 CallFrame，找到后替换引用并重置 PC。匿名 parallel track 的命名规则为 `__parallel_{parent_label}_{track_index}__`，有命名的 track 用命名作为后缀，保证名字全局唯一。
+
+**`CompiledProject.label_index` 设计为可变 dict**：热重载就是在运行时替换这个索引里的 `CompiledLabel` 对象，不能是 frozen 结构。
+
 #### 指令集
 
 字节码指令分以下几类：
@@ -3843,7 +3913,7 @@ class Parser:
 #### 执行模型
 
 - **tick 驱动**：VM 暴露 `tick()` 方法，每帧调用一次。每次 tick 执行指令直到遇到等待点（用户点击、计时器、动画、并行轨道），返回本帧产生的 `UICommand` 列表
-- **调用栈**：每个 label 调用对应一个 CallFrame，包含指令列表、常量池引用、PC、局部变量表。label 参数绑定后写入 locals，执行时优先查 locals 再查 store
+- **调用栈**：每个 label 调用对应一个 CallFrame，持有对 `CompiledLabel` 的间接引用（不拷贝指令列表），包含 PC、局部变量表。label 参数绑定后写入 locals，执行时优先查 locals 再查 store。间接引用是热重载的基础——替换 `CompiledLabel` 后 frame 自动使用新指令，无需重建调用栈
 - **指令分发**：使用分发表（`dict[OpCode, Callable]`）而非 match/case，可维护性更好
 
 #### 等待状态
@@ -3867,9 +3937,12 @@ class Parser:
 负责并行轨道执行和 transform 注册表管理：
 
 - 每个 track 对应一个独立 CallFrame，Scheduler 每帧独立步进每个 track
+- **tick 顺序**：普通 track 按声明顺序先 tick，interactive track 永远最后 tick；顺序确定性有保证，开发者可依赖
 - interactive track 的对话行独占用户输入，其他 track 继续运行
 - transform 注册表以显示对象 id 为 key，`hide` 对象时自动停止所有附属 transform
 - `wait for all` 只等前台动画（`repeat 1` / `repeat N`），后台动画（`repeat forever`）不参与
+- 暴露 `active_label_files() -> set[str]` 接口供热重载器查询当前正在执行的文件集合
+- 暴露 `has_active_parallel() -> bool` 接口供热重载器判断是否有 parallel 块正在执行
 
 #### 关键设计决策（VM）
 
@@ -3880,6 +3953,130 @@ class Parser:
 **parallel 完成判断**：`wait=all` 等所有 track 完成；`wait=any` 等最先完成的 track；`wait=none` 立即推进，track 在后台继续运行直到自然结束。`wait=any` 与 interactive track 共存时编译器阶段已报错，VM 不需要处理此情况。
 
 **错误边界**：Python 块内的异常包装为 `AxnRuntimeError` 上抛，携带源码位置。已格式化的 `AxnError` 直接上抛不二次包装。引擎内部异常抛 `AxnInternalError`，暴露完整 Python traceback。
+
+**CallFrame 持有间接引用**：CallFrame 不内联指令列表，通过 `label_ref: CompiledLabel` 持有对象引用，每帧通过引用取指令。热重载时只需替换全局 label 索引中的 `CompiledLabel` 对象并重置相关 frame 的 PC，不需要重建调用栈。Scheduler 内的 track frame 同样遵守此规则。
+
+**Scheduler tick 顺序确定性**：普通 track 按声明顺序先 tick，interactive track 永远最后 tick。此顺序作为规范写入文档，开发者可依赖，引擎不允许在不同版本间改变此顺序。
+
+**热重载分级处理**：热重载请求在帧末批量处理（防抖合并）。parallel 块执行期间，不影响当前执行的文件立即处理，影响当前执行文件的请求推迟到 parallel 结束后自动处理。编辑器显示待处理计数，parallel 结束后消失。
+
+---
+
+### 核心数据结构骨架
+
+以下结构为所有模块的共同锚点，设计阶段已确认，实现时不应偏离：
+
+```python
+class Store(dict):
+    _debug:         bool
+    _type_registry: dict[str, type]  # flag 注解 → 类型，debug 模式下 __setitem__ 检查
+
+@dataclass
+class CompiledLabel:
+    name:         str           # 热重载时按名字匹配
+    filename:     str
+    instructions: list[Instruction]
+    constants:    list[Any]
+    params:       list[str]
+
+@dataclass
+class CallFrame:
+    label_ref: CompiledLabel    # 间接引用，不拷贝指令列表
+    pc:        int
+    locals:    dict
+
+@dataclass
+class Track:
+    name:        str | None
+    frame:       CallFrame
+    interactive: bool
+    done:        bool
+
+class Scheduler:
+    active_tracks:   list[Track]        # 普通 track 按声明顺序，interactive 永远最后
+    transform_table: dict[int, list]    # 显示对象 id → transform 列表
+
+    def tick(dt: float) -> list[UICommand]: ...
+    def active_label_files() -> set[str]: ...   # 热重载查询接口
+    def has_active_parallel() -> bool: ...      # 热重载查询接口
+
+class HotReloader:
+    _pending_reloads: list[str]         # 待处理文件路径，帧末批量处理
+
+    def enqueue(filepath: str): ...     # 文件监听回调，只入队
+    def flush(): ...                    # 帧末调用，分级处理
+```
+
+---
+
+### 热重载系统
+
+热重载是运行时注入能力的核心价值，从 MVP 阶段即需支持，不是事后插入的功能。CallFrame 的间接引用设计正是为此服务。
+
+#### 热重载边界
+
+| 内容 | 支持 | 说明 |
+|------|------|------|
+| `.apy` 脚本文件 | ✅ | label 级重编译，PC 重置到 label 入口 |
+| 资源文件（图片/音频） | ✅ | 下次引用时重新加载 |
+| Python 模块 | ✅ | `importlib.reload()` |
+| 原生库（.so / .dll） | ✅ | dlclose + 重新 dlopen，调用方需确保无残留引用 |
+| Store 结构 / flag 声明 | ❌ | 变量注册表变更影响存档兼容性，需重启 |
+| `define` 角色定义 | ❌ | 符号表基础，运行时替换会导致状态混乱，需重启 |
+| 引擎核心（engine.py） | ❌ | 需重启 |
+
+#### 文件监听
+
+使用 `watchdog` 库，不自己实现。防抖合并是必须的——编辑器保存时通常触发多次 `on_modified`：
+
+```python
+class AxnFileWatcher(FileSystemEventHandler):
+    def on_modified(self, event):
+        if event.src_path.endswith('.apy'):
+            self._pending.add(event.src_path)   # 去重入队，帧末统一处理
+
+    def flush():
+        """帧末调用，批量处理变更"""
+        ...
+```
+
+#### .apy 热重载流程
+
+1. 文件变更入队（`enqueue`）
+2. 帧末 `flush`，检查是否有 parallel 块正在执行
+3. 不影响当前执行的文件：立即走增量 parser 重解析 → 重编译变更 label → 替换 `label_index` → 找到相关 CallFrame 替换 `label_ref` + 重置 PC
+4. 影响当前执行文件的请求：推迟到 parallel 结束后自动处理
+5. 编辑器显示"N 个文件变更等待热重载"计数，处理完毕后消失
+
+**PC 重置到 label 入口**是最保守也最安全的策略。视觉小说场景下开发者通常就是想从头看改过的那段，重置是期望行为，不尝试保持执行位置。
+
+#### 原生库热重载
+
+原生库热重载是放弃 iOS/Web 的根本原因，也是与 Ren'Py 最大的差异点。
+
+```python
+class NativeLibReloader:
+    _loaded: dict[str, ctypes.CDLL]
+
+    def reload(self, lib_path: str) -> ctypes.CDLL:
+        if lib_path in self._loaded:
+            self._unload(lib_path)      # 先卸载旧库
+        new_lib = ctypes.CDLL(lib_path)
+        self._loaded[lib_path] = new_lib
+        return new_lib
+```
+
+**`dlclose` 不保证立即卸载**：Linux 下如果有其他代码持有旧库的符号引用，`dlclose` 只是减引用计数，不会真正卸载。开发者必须确保旧库的所有函数调用结束后再 reload。此约束在文档和错误信息中明确说明。
+
+#### 关键设计决策（热重载）
+
+**热重载从 MVP 即支持**：这要求 `CallFrame` 从第一天起就持有间接引用而非内联指令列表，`CompiledProject.label_index` 从第一天起就是可变 dict，`Scheduler` 从第一天起就暴露 `active_label_files()` 和 `has_active_parallel()` 接口。事后插入会导致大规模重构。
+
+**文件监听使用 `watchdog`**：不自己实现，防抖合并到帧末批量处理。
+
+**parallel 期间分级处理**：不影响当前执行的文件立即 reload，影响当前执行文件的请求推迟，不阻塞整个热重载系统。
+
+**Store / define / 引擎核心不支持热重载**：边界必须明确告知开发者，不能让其猜测。尝试热重载这些内容时引擎输出明确错误，提示需要重启。
 
 ---
 
