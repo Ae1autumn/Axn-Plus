@@ -3366,7 +3366,7 @@ stop music (clear)      # 停止当前播放并清空队列
 
 `sound` 和 `voice` 不恢复的原因：短音效和语音通常与具体动作绑定，读档后对应动作已经过去，恢复没有意义。
 
-静默恢复保存的内容：当前播放文件名、播放进度（时间戳）、队列里剩余的待播项、通道的音量和淡入淡出状态。
+静默恢复保存的内容：当前播放文件名、播放进度（时间戳）、队列里剩余的待播项、通道的音量和淡入淡出状态
 
 ---
 
@@ -3782,6 +3782,104 @@ class Parser:
 **`define` 只允许出现在文件顶层**：保证第一、二遍扫描无需理解嵌套结构，各遍成本极低。
 
 **label 冲突在第三遍统一检查**：`label_table` 跨文件共享，第三遍每解析一个 label 就写入并检查冲突，确保任意文件顺序下均能检测到。
+
+---
+
+### 编译器（AST → 字节码）
+
+#### 编译目标结构
+
+- **CompiledLabel**：单个 label 的编译产物，包含指令列表、常量池、参数表
+- **CompiledChunk**：单个 `.apy` 文件的编译产物，包含该文件所有 label、animation、on_hook
+- **CompiledProject**：所有文件的编译产物，VM 直接使用；包含全局 label 索引、define 表、flag 注册表、const 表
+
+#### 指令集
+
+字节码指令分以下几类：
+
+| 类别 | 指令举例 |
+|------|---------|
+| 控制流 | `JUMP` `JUMP_IF` `JUMP_IF_NOT` `CALL` `RETURN` `HALT` |
+| Python 块 | `EXEC_PYTHON` `PUSH_EXPR` |
+| 对话与旁白 | `DIALOGUE` `NARRATOR` `WAIT_CLICK` |
+| 显示控制 | `SHOW` `HIDE` `SCENE` `CLEAR` `EXPRESSION_CMD` |
+| 音视频 | `PLAY_AUDIO` `STOP_AUDIO` `PAUSE_AUDIO` `RESUME_AUDIO` `PLAY_VIDEO` `STOP_VIDEO` |
+| 镜头 | `CAMERA` |
+| 等待 | `WAIT_DURATION` `WAIT_FOR` |
+| 菜单 | `MENU` `CHOICE` |
+| 存档 | `CHECKPOINT` |
+| 层管理 | `LAYER_MANAGE` |
+| 输入控制 | `INPUT_DISABLE` `INPUT_ENABLE` |
+| 模态框 | `MODAL_SHOW` `MODAL_HIDE` |
+| 并行 | `PARALLEL_BEGIN` `PARALLEL_END` |
+| 存取 | `LOAD_CONST` `STORE_VAR` `LOAD_VAR` `WITH_STORE` |
+| 动画 | `CALL_ANIMATION` |
+| 调试 | `ASSERT`（release 模式不生成） `DEBUG_BREAK` |
+
+每条指令携带：opcode、operand（常量池索引或直接值）、源码行号、源码文件名。行号和文件名用于运行时错误定位。
+
+#### 常量池
+
+所有复杂数据（字符串、命令对象、Python code object）统一放常量池，指令只存索引。可哈希对象自动去重，不可哈希对象（code object）直接追加。
+
+#### 关键设计决策（编译器）
+
+**跨文件跳转 operand 格式用 `(文件名, label名)` 元组**：视觉小说项目规模不会有性能瓶颈；调试时 operand 直接可读；展平方案在增量重编译时需要重新计算所有地址，维护成本高。VM 运行时通过全局 label 索引定位目标，天然支持跨文件跳转。
+
+**跳转地址延迟回填**：编译单个文件时跨文件 label 地址尚不完整，所有文件编译完后统一验证回填。跳转目标不存在时在此阶段报 `AxnCompileError`，不等到运行时。
+
+**Python 块编译为 code object**：`compile()` 在编译阶段执行，运行时只做 `exec()`。语法错误在编译阶段暴露，文件名和行号偏移传入 `compile()`，保证 traceback 正确指向 `.apy` 源文件。
+
+**parallel 块编译为多个独立 CompiledLabel**：每个 track 生成一个匿名 `CompiledLabel`，命名规则为 `__parallel_{parent_label}_{track_index}__`，有命名的 track 用命名作为后缀。`PARALLEL_BEGIN` 指令的 operand 存这些匿名 label 名的列表，交给 Scheduler 并发管理。
+
+**release 模式差异**：`assert` 节点不生成指令；Python `compile()` 使用 `optimize=2`；`AxnTypeError` 类型检查指令不生成。
+
+**`sta label` 已在 Parser 阶段验证**：编译器不重复检查，直接信任 `is_static` 标志。
+
+---
+
+### VM
+
+#### 执行模型
+
+- **tick 驱动**：VM 暴露 `tick()` 方法，每帧调用一次。每次 tick 执行指令直到遇到等待点（用户点击、计时器、动画、并行轨道），返回本帧产生的 `UICommand` 列表
+- **调用栈**：每个 label 调用对应一个 CallFrame，包含指令列表、常量池引用、PC、局部变量表。label 参数绑定后写入 locals，执行时优先查 locals 再查 store
+- **指令分发**：使用分发表（`dict[OpCode, Callable]`）而非 match/case，可维护性更好
+
+#### 等待状态
+
+| WaitKind | 触发 | 清除 |
+|----------|------|------|
+| `CLICK` | `DIALOGUE` / `WAIT_CLICK` 指令 | 用户点击，由后端调用 `vm.on_click()` |
+| `DURATION` | `WAIT_DURATION` 指令 | 每帧递减，归零自动清除 |
+| `ANIMATION` | `WAIT_FOR` 指令 | 目标动画完成 |
+| `PARALLEL` | `PARALLEL_BEGIN` 指令 | Scheduler 判断轨道完成条件满足 |
+
+#### Store
+
+- debug 模式下对有类型注解的 flag 变量通过 `__setitem__` 钩子做即时类型检查，错误信息包含声明位置
+- release 模式下退化为普通 dict，零开销
+- const 写入只读层，尝试赋值时抛 `AxnRuntimeError`
+- `with store` 原子块：执行前对涉及 key 做浅拷贝快照，异常时自动回滚
+
+#### Scheduler
+
+负责并行轨道执行和 transform 注册表管理：
+
+- 每个 track 对应一个独立 CallFrame，Scheduler 每帧独立步进每个 track
+- interactive track 的对话行独占用户输入，其他 track 继续运行
+- transform 注册表以显示对象 id 为 key，`hide` 对象时自动停止所有附属 transform
+- `wait for all` 只等前台动画（`repeat 1` / `repeat N`），后台动画（`repeat forever`）不参与
+
+#### 关键设计决策（VM）
+
+**Python 块执行环境**：store 作为 `globals`，frame.locals 作为 `locals`。变量写入 store，跨 label、跨 jump 天然持久化。引擎内置符号通过 `__builtins__` 注入为只读层，用户代码可见但不可覆盖。
+
+**transform 归属对象不归属 track**：track 结束不停止其内 `show` 触发的 transform，`hide` 对象时才停止所有附属 transform。此规则在 parallel 场景下与单轨道场景完全一致。
+
+**parallel 完成判断**：`wait=all` 等所有 track 完成；`wait=any` 等最先完成的 track；`wait=none` 立即推进，track 在后台继续运行直到自然结束。`wait=any` 与 interactive track 共存时编译器阶段已报错，VM 不需要处理此情况。
+
+**错误边界**：Python 块内的异常包装为 `AxnRuntimeError` 上抛，携带源码位置。已格式化的 `AxnError` 直接上抛不二次包装。引擎内部异常抛 `AxnInternalError`，暴露完整 Python traceback。
 
 ---
 
