@@ -339,6 +339,24 @@ if result == "confirm":
 else:
     jump resume_game
 
+# 鼠标光标控制
+# 命令式：脚本流程中随时切换，立即生效
+cursor "assets/cursor/sword.png"    # 切换为自定义图片光标
+cursor default                       # 恢复全局默认光标
+cursor none                          # 隐藏光标
+
+# 变量式：通过 store 变量驱动，适合状态联动
+$ engine.cursor = "assets/cursor/pointer.png"
+$ engine.cursor = "default"
+$ engine.cursor = "none"
+
+# 样式绑定：控件级，鼠标进入控件时自动切换，离开时恢复
+button "攻击" (cursor="assets/cursor/sword.png") on_click: jump battle
+image "map/region_a.png" (cursor=hover, on_click: jump region_a)   # 引用 options_window 中定义的具名cursor
+
+# 优先级（从高到低）：
+# 变量 engine.cursor > cursor 指令 > 控件 cursor= 参数 > options_window.apy 全局默认
+
 # 单行 Python（单行内 Python 语法合法即可）
 $ flag_met_eileen = True
 
@@ -1102,6 +1120,9 @@ include "common/prologue.apy"
 | `define extends` 角色继承 | 角色定义积木块显示继承关系；子角色字段列表中继承字段以灰色标注来源 |
 | `jump/call/return if/unless` 条件短路 | 脚本区带条件标签的跳转箭头节点，视觉权重轻于完整 `if` 块 |
 | `track (interactive)` | 时间轴视图中以特殊标记区分交互轨道与普通轨道；普通轨道内出现对话行时编辑器报错 |
+| `cursor` 指令 | 脚本区光标切换积木块；`default` / `none` 显示关键字标签，路径显示文件名 |
+| `engine.cursor` 变量 | 脚本区代码节点；编辑器在变量面板标注"光标控制变量，优先级最高" |
+| 控件 `cursor=` 参数 | 控件节点的光标字段；具名关键字显示下拉列表，路径显示文件名 |
 
 ### 静态与动态修饰符
 
@@ -1199,6 +1220,7 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 | `jump if/unless` | 目标 label | 条件表达式（行末 `if`/`unless` 后） |
 | `call if/unless` | label 调用 | 条件表达式（行末 `if`/`unless` 后） |
 | `return if/unless` | — | 条件表达式（行末 `if`/`unless` 后） |
+| `cursor` | 路径或关键字（`default` / `none`） | — |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
 
@@ -1206,7 +1228,7 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 ### 关键设计决策
 
-**表情控制**：表情状态跟着角色对象走，不跟场景走。对话修饰符修改角色的**持久表情状态**，与角色是否可见无关；`show` 出场时使用角色当前表情状态，不重置为 `default_expression`。`show` 指令仅控制位置和可见性，不影响表情状态。无对话时切换表情使用独立的 `expression` 指令，支持可选的 `transition` 参数。
+**`cursor` 指令与光标控制**：光标控制提供三种层级，优先级从高到低依次为：`engine.cursor` 变量（最高，适合状态联动）、`cursor` 指令（命令式，适合演出流程中的即时切换）、控件 `cursor=` 具名参数（样式绑定，鼠标进入控件时自动切换，离开时恢复上层光标）、`options_window.apy` 全局默认（最低）。`cursor default` 和 `$ engine.cursor = "default"` 恢复到全局默认光标；`cursor none` / `$ engine.cursor = "none"` 隐藏光标。控件 `cursor=` 参数接受路径字符串或 `options_window.apy` 中定义的具名光标关键字（如 `hover`、`drag`）。光标切换不产生过渡动画，立即生效。对话修饰符修改角色的**持久表情状态**，与角色是否可见无关；`show` 出场时使用角色当前表情状态，不重置为 `default_expression`。`show` 指令仅控制位置和可见性，不影响表情状态。无对话时切换表情使用独立的 `expression` 指令，支持可选的 `transition` 参数。
 
 **Python 块边界**：`$` 后允许任何在单行内 Python 语法合法的内容，包括三元表达式、多重赋值等（如 `$ x = 1 if flag else 2`、`$ a, b = b, a`）。需要换行的复合逻辑使用 `python:` 块，换行符即边界，无需记额外规则。
 
@@ -3211,6 +3233,40 @@ call chapter2.apy::chapter_one  # 显式路径引用（包含 :: 时触发）
 
 引擎配置（文件底部）+ 用 Pygame 代码绘制的预构建 UI（标题画面、菜单、对话框等）。UI 部分不依赖图片资源，完全由代码实现。
 
+**扩展管理**
+
+引擎内置扩展和外部扩展（`main/axn/`）默认全部关闭，必须在 `options_window.apy` 中显式声明开启：
+
+```apy
+engine:
+    extensions:
+        # 引擎内置扩展，逐个声明，默认全 false
+        builtins:
+            gallery          = true
+            panning_sprite   = true
+            cursor_manager   = true
+            scramble_text    = false
+            downloader       = false
+            archive          = false
+            notice           = true
+            error_screen     = false
+
+        # 外部扩展（main/axn/ 目录），整体开关
+        external = true
+
+        # 黑名单：external = true 时排除指定模块（模块名为文件名去掉 .apy）
+        disable:
+            axn::map
+            axn::clue_board
+```
+
+规则说明：
+- `builtins` 下每项独立控制，未声明的项默认 `false`
+- `external = true` 时引擎扫描整个 `main/axn/` 目录并加载所有 `.apy` 文件
+- `disable` 黑名单只在 `external = true` 时生效，对 `builtins` 无效
+- `external = false`（默认）时 `disable` 块无意义，引擎启动时输出警告
+- 引擎启动时检查 `builtins` 下声明了但实际未安装的模块，报 `AxnExtensionError` 并列出缺失项
+
 #### 资源引用规则
 
 有 `main/` 目录时，按指令类型自动在对应子目录查找，文件名不需要扩展名：
@@ -4503,7 +4559,6 @@ engine:
 ```
 
 `ask_user` 策略触发时拉起 `.apy` 冲突选择模板，展示本地与云端存档的时间戳、截图和关键变量差异，由玩家决定保留哪个版本。
-
 
 ---
 
