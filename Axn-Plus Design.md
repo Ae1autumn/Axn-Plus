@@ -4080,6 +4080,433 @@ class NativeLibReloader:
 
 ---
 
+## 内置功能库（Built-in Library）
+
+Axn-Plus 随引擎附带一批开箱即用的功能模块。按实现层级分为三类：
+
+| 类别 | 说明 |
+|------|------|
+| **引擎内置（Python核心层）** | 需要访问引擎内部状态、后端渲染API或平台底层能力，必须在Python层实现 |
+| **标准库 `.apy`** | 纯业务逻辑+UI组合，用现有引擎指令可以完整表达，直接以 `.apy` 文件分发 |
+| **两者都要** | 底层能力引擎提供，上层UI和配置以 `.apy` 模板分发 |
+
+---
+
+### 引擎内置（Python核心层）
+
+#### 画廊（Gallery）
+
+持久化解锁状态存入 `persistent`，缩略图离线缓存，资源懒加载（大图集按需解码，不全量预载）。纯 `.apy` 无法实现懒加载，超量图集会直接卡死渲染线程。
+
+- 引擎层：缩略图缓存管理、懒加载调度、`persistent` 读写
+- `.apy` 模板：默认画廊UI（`grid` 布局、解锁遮罩、全屏预览、翻页）
+
+#### 动态/静态精灵（Sprite）
+
+静态精灵为引擎现有能力。动态精灵即 `AnimatedSprite` 接口，已在核心设计中定义。此条目确认两者均为引擎内置，不通过 `.apy` 实现。
+
+#### 自动演出——大图平移（PanningSprite）
+
+超出视口的大图通过代码控制移动速度、位置、缩放。现有 `transform` 系统作用于标准尺寸对象，不处理 oversized surface 的裁剪与偏移，需要引擎渲染层新增支持。
+
+引擎内置 `PanningSprite` 可显示类，实现 `AnimatedSprite` 接口，暴露以下参数给 `.apy` 层：
+
+```apy
+show PanningSprite("bg/city_wide.png") center (speed=(0.5, 0), loop)
+show PanningSprite("bg/city_wide.png") (pos=(0.3, 0.0), size=1.2, duration=5.0)
+```
+
+| 参数 | 说明 |
+|------|------|
+| `speed` | `(x, y)` 每秒移动比例，相对图片尺寸 |
+| `pos` | 当前视口锚点，`(0.0, 0.0)` 为左上角，`(1.0, 1.0)` 为右下角 |
+| `size` | 缩放系数，`1.0` 为原始大小 |
+| `duration` | 从当前位置移动到目标位置的时长（秒） |
+| `loop` | 到达边界后反向，形成往返循环 |
+
+#### 鼠标自动切换（Cursor Manager）
+
+涉及系统鼠标指针API（Pygame：`pygame.mouse.set_cursor`；Qt：`QCursor`），`.apy` 层无法直接触达。
+
+引擎内置 cursor 注册表，支持按控件类型或命名区域自动切换指针样式。注册规则在 `options_window.apy` 中配置：
+
+```apy
+engine:
+    cursor:
+        default   "assets/cursor/default.png"
+        hover     "assets/cursor/pointer.png"
+        text      "assets/cursor/beam.png"
+        drag      "assets/cursor/grab.png"
+        wait      "assets/cursor/spinner.png"
+```
+
+`button`、`slider`、`input_field` 等交互控件自动触发对应 cursor 状态，无需手动声明。自定义区域通过 `cursor=` 具名参数覆盖：
+
+```apy
+image "map/region_a.png" (cursor=hover, on_click: jump region_a)
+```
+
+#### 乱码效果（ScrambleText）
+
+全局乱码和局部乱码均需劫持 `TextRenderer` 渲染管线，在字符级别做随机替换或扰动，必须在引擎层实现。
+
+**全局乱码**：在 `options_window.apy` 中开关，影响所有对话文本：
+
+```apy
+engine:
+    scramble:
+        enabled   = False
+        intensity = 0.3        # 0.0–1.0，被替换字符的比例
+        charset   = "glitch"   # 替换字符集：glitch / katakana / binary / custom
+        speed     = 0.05       # 每帧刷新间隔（秒），控制闪烁频率
+```
+
+运行时通过 `store` 变量动态切换：
+
+```apy
+$ engine.scramble.enabled = True
+$ engine.scramble.intensity = 0.6
+```
+
+**局部乱码**：在 `style` 系统中新增 `scramble` 类型，作用于单个控件或对话行：
+
+```apy
+style glitch_text:
+    scramble:
+        intensity 0.5
+        charset   "katakana"
+        speed     0.03
+
+# 对话行内联
+eileen: "̴̢̛y̵̛o̷̕u̸̧ ̶͝c̵̀a̸͝n̴̛'̸̀t̸̡ ̷̕ȩ̴s̷̀c̷͝a̵͝p̴̛e̸̡" (style=glitch_text)
+
+# 控件内联
+text "ERROR" (scramble=(intensity=0.8, charset="binary"))
+```
+
+`charset` 内置选项：
+
+| 值 | 替换字符集 |
+|----|-----------|
+| `glitch` | Unicode 控制字符 + 组合字符（̴̢̛ 类） |
+| `katakana` | 全角片假名（ァ-ン） |
+| `binary` | `0` / `1` |
+| `hex` | `0-9A-F` |
+| `custom` | 由 `charset_chars` 字段自定义字符串 |
+
+#### Downloader（资源下载器）
+
+支持空壳包体启动后在线下载完整资源，适用于包体大小受限的发布渠道（如 Google Play 初始包体限制）。
+
+引擎层实现：
+- 网络请求（`httpx`，支持断点续传）
+- 文件完整性校验（SHA-256）
+- 下载队列与并发控制
+- Android 存储权限运行时申请（Android 13+ 需要 `READ_MEDIA_*` 权限）
+- 下载状态持久化（异常退出后续传）
+
+`.apy` 模板提供默认下载界面（进度条、网速显示、错误重试UI），开发者可替换样式。
+
+在 `flow.apy` 的 `start` label 中设置调用点：
+
+```apy
+label start:
+    call axn::downloader.check_and_download
+    call chapter1.apy::prologue
+```
+
+`options_window.apy` 中配置下载源：
+
+```apy
+engine:
+    downloader:
+        manifest_url  = "https://example.com/game/manifest.json"
+        target_dir    = "downloaded/"
+        verify_hash   = true
+        max_retries   = 3
+        concurrent    = 2
+```
+
+#### 归档（Asset Archive）
+
+将资源文件打包为单个 `.axnpak` 归档文件，引擎在 `asset/loader.py` 层拦截路径解析，透明地从归档内读取资源。开发者和 `.apy` 脚本无需感知资源来自文件系统还是归档。
+
+`axn build` 扩展参数：
+
+```
+axn build --pack assets/dlc1/ --output dlc1.axnpak
+```
+
+运行时导入归档（须在 `flow.apy` 中有调用点）：
+
+```apy
+label start:
+    $ engine.mount_archive("dlc1.axnpak")
+    call chapter1.apy::prologue
+```
+
+归档内的资源引用方式与普通路径完全一致，无新语法。
+
+归档格式：自定义二进制格式，文件头包含索引表（路径 → 偏移+长度），支持可选的整体加密（AES-256-GCM，密钥在构建时注入）。
+
+#### 自定义引擎报错（Error Screen）
+
+允许脚本层主动拉起引擎原生报错界面，用于游戏内"故意报错"的叙事演出（如第四面墙破坏、系统崩溃彩蛋等）。
+
+拆分为两条指令，语义明确不混用：
+
+**`raise engine_error`**：走真实错误流程，中断执行，写入 `crash.log`，触发引擎错误处理矩阵。用于真正的错误场景。
+
+**`show error_screen`**：纯视觉模拟，不中断执行流，不写 log，本质是特殊样式的 `modal`。用于叙事演出：
+
+```apy
+show error_screen:
+    title    "FATAL ERROR"
+    code     "0x0000DEAD"
+    message  "Memory access violation at 0x{store['player_id']:08X}"
+    style    "bsod"          # 内置样式：bsod / axn_native / custom
+    on_close: jump after_glitch_scene
+```
+
+内置样式：
+
+| 样式 | 外观 |
+|------|------|
+| `bsod` | Windows 蓝屏风格 |
+| `axn_native` | 引擎原生报错界面（与真实错误界面视觉完全一致） |
+| `custom` | 开发者自定义，通过 `template` 提供完整控件树 |
+
+`axn_native` 样式下显示的内容与真实报错界面完全相同，包括 traceback 区域（内容由脚本填入，非真实调用栈）。开发者需在 `options_window.apy` 中显式启用此功能，避免误用：
+
+```apy
+engine:
+    allow_fake_error_screen = false   # 默认关闭，设为 true 才允许 show error_screen
+```
+
+---
+
+### 标准库 `.apy`
+
+以下模块均以 `.apy` 文件形式分发，开发者按需放入项目的 `main/axn/` 目录，通过 `include` 或跨文件 `call` 引入。所有扩展统一放在 `main/axn/` 下，不分子目录。
+
+#### 密码校验（Password Gate）
+
+`input_field` + `hashlib` 校验 + 条件跳转的组合模板。默认使用 SHA-256，支持自定义 hash 函数。
+
+```apy
+call axn::password_gate.show(
+    prompt   = "输入密码",
+    hash     = "5e884898da...",   # SHA-256 of "password"
+    on_pass  = secret_route,
+    on_fail  = wrong_password
+)
+```
+
+#### 彩蛋（Easter Egg）
+
+提供快速的彩蛋注册与触发模板。触发方式支持按键序列（Konami code 风格）和隐藏点击区。
+
+```apy
+# 在 options_window.apy 或任意顶层位置注册
+on key "up up down down left right left right b a":
+    call axn::easter_egg.trigger("konami")
+
+# 彩蛋内容定义
+label easter_egg_konami:
+    $ engine.scramble.enabled = True
+    eileen: "你找到我了。" (glitch_text)
+    $ engine.scramble.enabled = False
+```
+
+#### 演出人员名单（Credits）
+
+滚动文字 + 背景音乐 + 跳过按钮。支持分组（章节/角色/Staff）、字体大小分级、Logo 插入。
+
+```apy
+call axn::credits.show(
+    data     = "credits/staff.json",
+    bgm      = "bgm/ending.ogg",
+    speed    = 60,               # px/秒
+    on_done  = ending_label
+)
+```
+
+#### 背包（Inventory）
+
+数据层：`store` 内的 `list[dict]`，每个 item 包含 `id`、`name`、`icon`、`description`、`count` 等字段。UI层：`grid` + `tooltip` + 过滤/排序面板。
+
+```apy
+# 添加物品
+$ axn_inventory.add(store["inventory"], {"id": "key_001", "name": "古旧的钥匙", "icon": "items/key.png", "count": 1})
+
+# 打开背包界面
+call axn::inventory.show
+```
+
+#### 选项框（Option Dialog）
+
+`menu` 的标准UI封装，带标题、描述文本、选项列表。
+
+```apy
+call axn::option_dialog.show(
+    title   = "选择你的路线",
+    options = [("前往北区", "north"), ("留在原地", "stay")]
+) as choice
+jump choice
+```
+
+#### 复合确认框（Confirm Dialog）
+
+集成返回、确认与可展开提示的三态确认框，基于 `modal show` + `dialog` 实现。
+
+```apy
+modal show axn::confirm_dialog(
+    title   = "确定要删除存档吗？",
+    hint    = "删除后无法恢复，包括所有解锁内容。",
+    confirm = "删除",
+    cancel  = "取消"
+) as result
+
+if result == "confirm":
+    $ engine.delete_save(slot_id)
+    jump save_menu
+```
+
+#### 信息聚合（Clue Board）
+
+类解密游戏线索板。数据结构存 `store`，UI 支持节点卡片 + 连线（连线通过 `canvas` Python逃逸绘制）+ 解锁动画。
+
+```apy
+# 添加线索
+$ axn_clues.add(store["clues"], {"id": "clue_001", "title": "碎纸片", "content": "...", "unlocked": True})
+$ axn_clues.connect(store["clues"], "clue_001", "clue_003")
+
+# 打开线索板
+call axn::clue_board.show
+```
+
+#### 章节选择（Chapter Select）
+
+解锁状态存 `persistent`，UI 用 `grid` 布局，每章节显示标题、缩略图、解锁状态遮罩。
+
+```apy
+call axn::chapter_select.show(
+    chapters = [
+        {"id": "ch1", "title": "第一章", "thumb": "ui/ch1_thumb.png"},
+        {"id": "ch2", "title": "第二章", "thumb": "ui/ch2_thumb.png"},
+    ]
+)
+```
+
+#### 动态标题（Dynamic Title Screen）
+
+标题界面以 `screen` + `gui` 实现，所有视觉元素绑定 `store` 变量，支持运行时通过代码修改排版、背景、BGM、按钮组合。
+
+```apy
+# 修改标题界面配置
+$ axn_title.config.background = "bg/title_winter.png"
+$ axn_title.config.bgm = "bgm/title_winter.ogg"
+$ axn_title.config.show_continue = persistent.has_save
+
+call axn::title_screen.show
+```
+
+#### 地图（Map）
+
+静态地图：`image` + 透明 `button` 热区覆盖。动态地图：节点解锁状态存 `store`，节点间连线通过 `canvas` 绘制，支持节点动画（新解锁闪烁）。
+
+```apy
+call axn::map.show(
+    background = "map/world.png",
+    nodes      = store["map_nodes"],   # list[dict]，含位置、解锁状态、跳转目标
+    on_select  = map_node_selected
+)
+```
+
+---
+
+### 两者都要
+
+#### 视差跟随（Parallax）
+
+渲染层需要感知各图层的视差系数，按系数差异响应鼠标移动或镜头位移，这是后端 `renderer.py` 的责任。上层配置通过扩展 `layer create` 指令声明：
+
+```apy
+layer create bg_far   (above=bg, parallax=0.1)    # 移动量为鼠标偏移的 10%
+layer create bg_near  (above=bg_far, parallax=0.4)
+layer create sprite   (above=bg_near, parallax=1.0)  # 跟随鼠标1:1移动（默认）
+```
+
+`parallax` 值为 `0.0`（完全固定）到 `1.0`（完全跟随）。未声明时默认 `1.0`。视差响应源在 `options_window.apy` 中配置：
+
+```apy
+engine:
+    parallax:
+        source    = "mouse"    # mouse / camera / both
+        intensity = 0.05       # 鼠标偏移到实际移动量的缩放系数
+        smoothing = 0.15       # 插值平滑系数（0 = 即时，1 = 不移动）
+```
+
+#### 通知系统（Notice）
+
+**引擎层**：
+
+游戏内通知：通知队列管理（并发上限、优先级、去重）、持续时间计时、进入/退出动画调度。
+
+系统级通知（平台API封装）：
+- Windows：`win10toast` 或 Windows Runtime `ToastNotification` API
+- macOS：`NSUserNotificationCenter`（10.14以下）/ `UNUserNotificationCenter`（10.14+）
+- Android：通过 Pyjnius 调用 `NotificationManager`，Android 13+ 运行时申请 `POST_NOTIFICATIONS` 权限
+- Linux：`libnotify` / `notify-send`
+
+统一抽象接口，`.apy` 层无需感知平台差异：
+
+```apy
+# 游戏内通知
+notice show "解锁了新CG：夏日记忆" (icon="ui/cg_icon.png", duration=3.0, priority=normal)
+
+# 系统级通知（游戏在后台或最小化时）
+notice system "新内容已下载完成" (subtitle="第三章现已可玩", icon="app_icon.png")
+```
+
+**`.apy` 模板**：
+
+游戏内通知UI（位置、样式、动画、堆叠方式），开发者可替换默认模板：
+
+```apy
+engine:
+    notice:
+        position  = "top_right"      # top_right / top_center / bottom_right 等
+        max_stack = 3                # 同时显示上限
+        duration  = 3.0              # 默认持续时间（秒）
+        gap       = 8                # 通知之间的间距（px）
+```
+
+#### Cloud Save（可选插件）
+
+**定位**：可选插件，不随引擎默认安装，开发者按需引入。不同平台的账号体系差异过大，不适合强制内置。
+
+**引擎层**：网络请求（`httpx`）、本地/云端存档冲突检测与解决、序列化格式与本地存档统一。
+
+**`.apy` 模板**：同步状态UI（上传中、下载中、冲突选择界面）。
+
+冲突解决策略在 `options_window.apy` 中配置：
+
+```apy
+engine:
+    cloud_save:
+        provider      = "custom"          # custom（自建后端）
+        endpoint      = "https://..."
+        conflict      = "newer_wins"      # newer_wins / local_wins / cloud_wins / ask_user
+        auto_sync     = true
+        sync_interval = 300               # 秒
+```
+
+`ask_user` 策略触发时拉起 `.apy` 冲突选择模板，展示本地与云端存档的时间戳、截图和关键变量差异，由玩家决定保留哪个版本。
+
+
+---
+
 ## 不是什么
 
 - 不是 Ren'Py 的分支或 fork
