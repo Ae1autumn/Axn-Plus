@@ -280,6 +280,24 @@ resume music 0.3                        # 带 fadein 的恢复
 pause video
 resume video 0.3
 
+# pause（游戏进程控制，区别于音视频的 pause/resume）
+# 全局冻结：时间停止，所有 transform、timer、动画全部冻结
+pause                               # 冻结所有，等点击推进
+pause 3.0                           # 冻结，3 秒后自动推进，点击可提前
+pause until flag_ready              # 冻结，条件满足后推进
+pause (freeze_audio=False)          # 冻结画面和动画，音频继续
+
+# pause transform：单个 transform 暂停，保留进度
+show eileen (transform=breathe) as anim_eileen
+pause transform anim_eileen         # 暂停，保留当前帧进度
+resume transform anim_eileen        # 从暂停帧继续
+
+# freeze / unfreeze：单个控件冻结（不响应输入）
+freeze hud_button                   # 单个控件冻结，自动应用 disabled 样式
+unfreeze hud_button
+freeze (layer=effect)               # 冻结整个层上的所有控件
+unfreeze (layer=effect)
+
 # 视频（play 子命令扩展）
 # play video 位置参数顺序：路径 → volume
 # 默认阻塞（blocking），非阻塞时显式加 (async)
@@ -338,6 +356,22 @@ if result == "confirm":
     jump ending_quit
 else:
     jump resume_game
+
+# 对话框窗口控制
+window show              # 显示对话框容器
+window hide              # 隐藏对话框容器，文字按 hide_behaviour 策略降级渲染
+window hide (all)        # 隐藏整个对话系统（框 + 文字），默认 mode=pause
+window hide (all, mode=pause)   # 遇对话行挂起，window show 后继续显示
+window hide (all, mode=skip)    # 对话行静默跳过，不计入历史，执行流不停
+window auto              # 有对话时自动 show，无对话时自动 hide（推荐默认）
+
+# window hide 行为在 options_window.apy 中配置：
+# engine:
+#     window:
+#         hide_behaviour = "overlay"   # 文字叠加在场景上（无背景框），默认
+#         hide_behaviour = "drop"      # 丢弃当前对话内容，静默跳过
+#         hide_behaviour = "error"     # 抛出 AxnWarning，可 ignore
+#         hide_behaviour = "queue"     # 对话排队，window show 后继续
 
 # 鼠标光标控制
 # 命令式：脚本流程中随时切换，立即生效
@@ -477,6 +511,160 @@ return
 ```
 
 ### 扩展语法
+
+#### 文本标签系统
+
+对话行内使用 `<tag>` 语法插入内联格式，与 `{expr}` 插值双轨并行，两者在 `TextRenderer` 层统一解析，互不冲突。
+
+```apy
+eileen: "这个字<b>很重要</b>，<color=#ff0000>注意</color>。"
+eileen: "稍等……<w=1.5>好了。"           # 中途暂停 1.5 秒后继续
+eileen: "我叫<nw>"                       # 说完立刻推进，不等点击
+eileen: "<fast>直接显示完整文本。"        # 跳过打字机效果
+eileen: "音量<alpha=0.5>渐弱</alpha>的字。"
+eileen: "内联图标：<image=icon/heart.png>"
+eileen: "你好，{player_name}！"          # 插值保持不变，无冲突
+```
+
+**内置标签列表：**
+
+| 标签 | 功能 |
+|------|------|
+| `<b>` / `</b>` | 粗体 |
+| `<i>` / `</i>` | 斜体 |
+| `<color=#rrggbb>` / `</color>` | 颜色 |
+| `<size=N>` / `</size>` | 字号（px） |
+| `<alpha=N>` / `</alpha>` | 透明度（0.0–1.0） |
+| `<w>` / `<w=N>` | 中途等待点击 / 等待 N 秒后继续 |
+| `<p>` / `<p=N>` | 段落暂停（清屏后等待点击 / N 秒） |
+| `<nw>` | 说完不等点击，直接推进执行流 |
+| `<fast>` | 跳过打字机效果，直接显示完整文本 |
+| `<image=path>` | 内联图片（表情图标等） |
+| `<rb>` / `<rt>` / `</rb>` | Ruby 注音（`<rb>漢<rt>かん</rt>字<rt>じ</rt></rb>`） |
+
+**`<w>` / `<nw>` 对 VM 执行模型的影响：**
+
+一行对话可能产生多个等待点，`DIALOGUE` 指令内部维护状态机：
+
+- `<w>` 产生中途 `WAIT_CLICK`，继续渲染后续文字
+- `<nw>` 渲染完毕后不产生 `WAIT_CLICK`，直接推进
+- 回滚边界：`<w>` 产生的中途等待点**不作为**回滚检查点，整行对话作为一个回滚单元
+
+**不计入历史记录的标签：**
+
+`<nw>` 行和 `<fast>` 行正常计入历史。若需要某行完全不计入：
+
+```apy
+eileen: "这句话不会进历史记录。" (no_history)
+```
+
+---
+
+#### 回滚系统
+
+采用分级策略，按 label 声明回滚行为，不做全量状态快照链：
+
+```apy
+label morning_scene (rollback=dialogue):    # 默认，只回滚对话显示状态
+    eileen: "早上好。"
+
+label choice_scene (rollback=checkpoint):   # 回到最近 checkpoint 的完整状态
+    menu:
+        "选项A" -> route_a
+        "选项B" -> route_b
+
+label cutscene (rollback=none):             # 完全禁止回滚
+    play video "cutscene/intro.mp4"
+```
+
+| 策略 | 回滚内容 | Python 状态 | 开销 | 适用场景 |
+|------|---------|------------|------|---------|
+| `dialogue`（默认） | 当前对话行、角色表情、背景 | **不回滚** | 极低 | 普通对话段 |
+| `checkpoint` | 最近存档点的完整状态 | 回滚到存档点 | 中 | 含重要选择的场景 |
+| `none` | 禁止回滚 | — | 零 | 过场动画、不可撤销操作 |
+
+`dialogue` 模式下 Python 状态变更不回滚，这是明确的设计取舍——大多数玩家回滚只是想重读上一句话。此行为在文档和编辑器中均有明确标注。
+
+---
+
+#### 对话历史（Backlog）
+
+引擎层维护历史 buffer，UI 层由标准库模板提供。
+
+```apy
+# options_window.apy
+engine:
+    history:
+        max_entries      = 200
+        include_voice    = true     # 点击条目可重播语音
+        include_narrator = true
+        include_choices  = false    # 选项不计入历史（可选）
+        persist          = false    # true = 存入 persistent 跨存档保留，false = 仅当次游玩
+```
+
+脚本层可显式标记不计入历史：
+
+```apy
+eileen: "这句话不会进历史记录。" (no_history)
+```
+
+---
+
+#### 动态指令（`$` 前缀）
+
+`$` 前缀标记运行时从 store 求值，规则与 `say speaker` 一致——**`$` 前缀 = 运行时求值**，适用于 `show` / `hide` / `call` / `jump`：
+
+```apy
+$ sprite = get_current_sprite()
+$ target = compute_next_label()
+
+show $sprite center 0.3 (enter=fadein)    # 动态 show
+hide $sprite 0.5                          # 动态 hide
+call $target("happy")                     # 动态 call
+jump $target                              # 动态 jump
+```
+
+静态版本保持不变，无歧义：
+
+```apy
+show eileen center      # 静态，编译期确定
+jump morning_scene      # 静态，编译期确定
+```
+
+解析规则：动词后第一个 token 为 `$identifier` 时走动态路径，否则走静态路径。GUI 编辑器对动态节点显示变量名字段，作为代码节点处理。
+
+`$` 前缀只接受单一 store 变量名，不接受任意表达式——需要复杂计算时先用 `$` 块算好再引用：
+
+```apy
+python:
+    sprite = choose_sprite(day, relationship)
+show $sprite center
+```
+
+---
+
+#### `startup` 块（初始化优先级控制）
+
+控制初始化代码的执行阶段，替代 Ren'Py 的 `init N:` 数字优先级：
+
+```apy
+startup:                    # 默认阶段
+    $ config.name = "My Game"
+    $ config.version = "1.0"
+
+startup (before):           # 最早执行，适合库初始化、依赖注入
+    python:
+        def early_setup():
+            pass
+
+startup (after):            # 最晚执行，适合依赖其他模块的初始化
+    python:
+        register_extensions()
+```
+
+三个阶段执行顺序：`before` → 默认 → `after`。同阶段内按文件扫描顺序执行。`startup` 块只允许出现在文件顶层，不允许嵌套在 `label` 或其他块内。
+
+---
 
 #### 叙事表达
 
@@ -1123,6 +1311,17 @@ include "common/prologue.apy"
 | `cursor` 指令 | 脚本区光标切换积木块；`default` / `none` 显示关键字标签，路径显示文件名 |
 | `engine.cursor` 变量 | 脚本区代码节点；编辑器在变量面板标注"光标控制变量，优先级最高" |
 | 控件 `cursor=` 参数 | 控件节点的光标字段；具名关键字显示下拉列表，路径显示文件名 |
+| 文本标签 `<b>` / `<w>` / `<nw>` 等 | 对话积木块内富文本编辑器，标签高亮显示；`<w>` 显示为中途等待点标记；`<nw>` 显示为"无需等待"标记 |
+| Ruby 注音 `<rb>` / `<rt>` | 对话积木块内注音编辑器，原文与注音分列显示 |
+| `no_history` 修饰符 | 对话积木块上的"不计入历史"开关 |
+| `label (rollback=...)` | label 节点的回滚策略字段，下拉选择 `dialogue` / `checkpoint` / `none` |
+| `window show/hide/auto` | 脚本区对话框控制积木块；`hide (all)` 显示 mode 字段 |
+| `pause`（游戏进程） | 脚本区暂停积木块；显示冻结类型（全局 / transform / 控件） |
+| `pause transform` / `resume transform` | 脚本区 transform 暂停/恢复节点，句柄名字段可编辑 |
+| `freeze` / `unfreeze` | 脚本区控件冻结积木块，控件名或层名字段可编辑 |
+| `startup (before/after)` | 脚本区初始化阶段节点，独立于流程图展示 |
+| `notify` / `notify system` | 脚本区通知积木块；`system` 标注为系统级通知 |
+| 动态 `show $sprite` / `jump $target` | 脚本区动态指令节点，变量名字段可编辑，与静态版本视觉区分 |
 
 ### 静态与动态修饰符
 
@@ -1221,6 +1420,15 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 | `call if/unless` | label 调用 | 条件表达式（行末 `if`/`unless` 后） |
 | `return if/unless` | — | 条件表达式（行末 `if`/`unless` 后） |
 | `cursor` | 路径或关键字（`default` / `none`） | — |
+| `window show/hide/auto` | — | `all` `mode` `freeze_audio` |
+| `pause`（游戏进程） | — | `freeze_audio` `until` |
+| `pause transform` | 动画句柄名 | — |
+| `resume transform` | 动画句柄名 | — |
+| `freeze` | 控件名（可选） | `layer` |
+| `unfreeze` | 控件名（可选） | `layer` |
+| `startup` | — | `before` / `after`（阶段标记） |
+| `notify` | 消息字符串 | `icon` `duration` `priority` |
+| `notify system` | 消息字符串 | `subtitle` `icon` |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
 
@@ -1404,6 +1612,24 @@ input disable:
 **`parallel` 块与存档的边界**：`checkpoint` 禁止出现在 `parallel` 块内（解析期报错）；`checkpoint` 须在所有 track 完全结束后执行，否则运行时跳过并警告；`parallel` 执行期间自动存档挂起，手动存档挂起并显示 UI 提示，两者均在块完全结束后触发。
 
 **`on enter` 读档触发行为**：默认（`restore=auto`）读档后不重新触发，依赖状态快照恢复；`restore=always` 读档后重新触发，开发者自行保证幂等性；`restore=never` 读档后永不触发。`restore=always` 时 debug 模式输出幂等性提醒。
+
+**文本标签系统**：对话行内使用 `<tag>` 语法，与 `{expr}` 插值双轨并行，`TextRenderer` 统一解析。`<w>` 在句中产生中途等待点，`DIALOGUE` 指令内部维护状态机处理多等待点；`<nw>` 说完不等点击直接推进。`<w>` 产生的中途等待点不作为回滚检查点，整行对话作为一个回滚单元。
+
+**回滚系统分级策略**：`rollback=dialogue`（默认）只回滚对话显示状态，Python 状态变更不回滚；`rollback=checkpoint` 回到最近存档点的完整状态；`rollback=none` 完全禁止回滚。策略在 label 声明处指定，不做全量状态快照链，务实取舍开销与功能的平衡。
+
+**对话历史 buffer**：引擎层维护，UI 层由标准库模板提供。`no_history` 修饰符标记不计入历史的对话行；`<nw>` 行和 `<fast>` 行正常计入历史。buffer 是否持久化到 `persistent` 由 `options_window.apy` 配置。
+
+**动态指令 `$` 前缀**：`show $sprite` / `hide $sprite` / `call $target` / `jump $target` 统一用 `$` 前缀标记运行时求值，与 `say speaker` 的动态变量语义一致，一条规则覆盖全部动态指令。`$` 前缀只接受单一 store 变量名，不接受任意表达式，保证 GUI 可解析调用点。
+
+**`startup` 块**：替代 Ren'Py 的 `init N:` 数字优先级，使用语义化阶段声明（`before` / 默认 / `after`）。三个阶段顺序固定，同阶段内按文件扫描顺序执行。只允许出现在文件顶层。
+
+**`pause`（游戏进程）与 `wait` 的区别**：`wait` 是执行流等待点，游戏世界继续运行（动画、音频继续）；`pause` 是字面意义的冻结，时间停止，所有 transform、timer、动画全部冻结。`pause transform` 单独暂停指定动画句柄，保留进度，`resume transform` 从冻结帧继续。`freeze` / `unfreeze` 冻结控件的输入响应，自动应用 `disabled` 样式。全局 `pause` 和 `pause transform` 状态独立，全局 `resume` 不意外恢复单独暂停的 transform。
+
+**`window` 控制**：`window show` / `window hide` / `window auto` 控制对话框容器可见性。`window auto` 是推荐默认工作流，引擎自动管理，彻底规避对话进行时窗口被隐藏的问题。`window hide` 只隐藏容器，文字按 `hide_behaviour` 策略降级；`window hide (all)` 隐藏整个对话系统，`mode=pause` 时遇对话行挂起等 `window show` 恢复，`mode=skip` 时静默跳过对话行且不计入历史。`mode=skip` 期间遇到 `menu` 时强制切换为 `pause` 模式并输出 `AxnWarning`，不允许静默跳过玩家选择权。对话框与输入系统正交，`window hide` 不影响 `input disable` 状态，反之亦然。
+
+**`notify` 升格为核心指令**：从标准库扩展升格为核心脚本指令。`notify` 触发游戏内通知，`notify system` 触发平台级系统通知（游戏最小化时可见）。内置库模板提供默认 UI，开发者可替换。
+
+**兼容性写法容错原则**：混杂写法或语义混乱的情况默认允许，引擎运行到对应节点时抛出报错提示，可 ignore 以继续进程。推荐已有的标准写法，但不阻止开发者使用非标准写法，由此产生的问题由开发者负责。此原则适用于所有非歧义、非引擎严重影响的兼容性问题。
 
 ---
 
@@ -1985,6 +2211,20 @@ screen hud:
     pin bottom center:
         dialogue_box
 ```
+
+**局部 `style`**：`screen` 内部可定义局部 `style`，只在此 `screen` 内生效，不污染全局：
+
+```apy
+screen pause_menu:
+    style button:                  # 只在此 screen 内生效
+        background #333333
+        size (120, 36)
+
+    button "继续" on_click: jump resume_game
+    button "存档" on_click: jump save_menu
+```
+
+局部 `style` 优先级高于全局同名 `style`。
 
 #### `use`：screen 嵌套 screen
 
@@ -2571,7 +2811,17 @@ gui toggle_button(label, key):
     button label on_click: store[key] = not store[key]
 ```
 
-`when` 允许的表达式限制：预定义状态关键字 **或** `state` / `store` 变量的简单比较。不允许任意 Python 表达式，保证 GUI 编辑器完整可解析。复杂条件退回 `if` 块或 Python。
+`when` 允许的表达式限制：预定义状态关键字 **或** `state` / `store` 变量的简单比较，支持 `and` / `or` / `not` 组合，不允许任意 Python 表达式，保证 GUI 编辑器完整可解析。复杂条件退回 `if` 块或 Python。
+
+```apy
+gui option_button(label):
+    style:
+        background #444444
+        when hovered and not disabled:
+            background #555555
+        when selected or focused:
+            border (2, #aaaaff)
+```
 
 #### 8. 滚动容器
 
@@ -2716,6 +2966,18 @@ mixin danger_style:
     border (1, #ff0000)
 ```
 
+**`mixin` 继承**：支持 `extends` 继承另一个 `mixin`，子类覆盖父类同名属性，未声明属性全部继承：
+
+```apy
+mixin base_interactive:
+    hovered:  background #555555
+    pressed:  background #333333
+
+mixin danger_interactive extends base_interactive:
+    hovered:  background #ff3333   # 覆盖
+    # pressed 继承 base_interactive
+```
+
 **参数化 `mixin`**：支持函数签名风格，提升复用灵活度：
 
 ```apy
@@ -2735,6 +2997,14 @@ gui special_button(label) extends base_button:
     apply danger_style
     apply large_style       # 冲突属性取 large_style
     background #333333      # 自身声明，最终优先
+```
+
+**`apply` 条件应用**：条件表达式限制为参数变量的简单比较，保证 GUI 可解析：
+
+```apy
+gui button(label, is_danger=False):
+    apply danger_style    if is_danger
+    apply default_style   unless is_danger
 ```
 
 #### 第三层：`style`（全局具名样式）
@@ -2923,6 +3193,23 @@ gui my_button(label) extends base_button:
 
 **具名频道事件**：`emit` 不写 `channel` 时向父容器冒泡；写 `channel` 时广播到所有订阅该频道的 `on_event`，不受控件树结构限制，不冒泡。两种模式不混用，规则无歧义。
 
+**`theme` token 类型系统**：token 类型由字面量决定（数字 → `int`/`float`，`#rrggbb` → `color`，字符串 → `str`），同类型支持算术运算，类型不匹配时引擎启动报错：
+
+```apy
+font_size $font.size.base + 2       # int + int，合法
+padding   $spacing.md               # int，合法
+color     $color.primary            # color 类型，合法
+# color $color.primary + 2         # 类型不匹配，AxnThemeError
+```
+
+```
+AxnThemeError: Type mismatch in token expression
+  '$color.primary + 2' — cannot add color and int
+  → options_window.apy, line 34
+```
+
+**`style` 局部作用域**：`screen` 内部可定义局部 `style`，只在该 `screen` 内生效，优先级高于全局同名 `style`，不污染其他 `screen`。`mixin` 同样支持 `extends` 继承，子 `mixin` 覆盖父 `mixin` 同名属性，未声明属性全部继承。`apply` 支持条件应用（`apply mixin if condition`），条件表达式限制为参数变量的简单比较，保证 GUI 可解析。
+
 ---
 
 ### Round-Trip Fidelity 补充（UI 系统）
@@ -2973,6 +3260,11 @@ gui my_button(label) extends base_button:
 | `button (style=mixin)` | 调用点样式字段显示 mixin 名，点击跳转 mixin 定义；传入 `style` 名时编辑器报错提示改用 `mixin` |
 | `grid` | 网格布局积木块，columns/gap 字段可编辑，编辑器内按列数预览网格结构 |
 | `typewriter` | 打字机积木块；标注"底层共享 TextRenderer"；speed/on_complete 字段可编辑 |
+| `style`（局部，screen 内） | screen 节点内的局部样式面板，标注"局部，不影响全局" |
+| `mixin extends` | 样式库面板显示 mixin 继承关系；继承字段以灰色标注来源 |
+| `apply mixin if condition` | apply 节点显示条件字段，条件参数变量名可编辑 |
+| `when ... and/or/not ...` 组合条件 | 样式编辑器内组合条件字段，支持 and/or/not 可视化编辑 |
+| `window show/hide/auto` | 脚本区对话框控制节点；`hide (all)` 节点显示 mode 下拉选择 |
 
 ---
 
