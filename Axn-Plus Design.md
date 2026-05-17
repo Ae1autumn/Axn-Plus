@@ -209,6 +209,20 @@ show eileen left 0.3                                    # 指定 duration
 show eileen left 0.3 (enter=slidein_left)               # 补全具名参数
 show eileen (layer=effect)                              # 显式指定层，默认为 sprite 层
 
+# 动画句柄：推荐用 handle= 具名参数（推荐写法）
+show eileen left 0.3 (enter=slidein_left, handle=anim_eileen)
+# 保留 as 句柄写法，但引擎警告，可 ignore
+show eileen left 0.3 (enter=slidein_left) as anim_eileen
+
+# 多实例：同一角色同时出现在多个位置，用 alias= 命名独立实例
+# 不同实例的位置、表情、transform 状态完全独立，互不影响
+show eileen left (alias=left_eileen)
+show eileen right (alias=right_eileen)
+show eileen (transform=ghost, alias=ghost_eileen)
+hide left_eileen                    # 按 alias 名操作具体实例
+expression left_eileen happy        # 按 alias 名修改表情
+# 同样保留 as 写法但警告：show eileen left as left_eileen
+
 # hide 位置参数顺序：角色 → duration
 hide eileen                                             # 立即隐藏
 hide eileen 0.5                                         # 指定 duration
@@ -233,6 +247,14 @@ scene bg_room 0.5 (with=fade)           # 补全具名参数
 scene bg_room (keep)                    # 保留所有立绘
 scene bg_room (keep=eileen)             # 只保留 eileen，其余清除
 scene bg_room (keep=[eileen, sophia])   # 保留多个
+
+# transition：全屏过渡，不切换任何内容（替代 Ren'Py 独立 with 语句的用途）
+# 位置参数顺序：过渡名 → duration
+transition fade 1.0             # 全屏渐黑再渐亮
+transition black 0.5            # 直接渐黑
+transition white 0.3            # 渐白
+transition dissolve 0.5         # 全屏 dissolve
+# 内置过渡名与 show/hide/scene 的 enter/exit/with 参数共享同一套过渡库
 
 # clear：精确清除，无过渡，不受 scene 影响
 clear                           # 清除 sprite 层所有元素
@@ -266,6 +288,12 @@ play music "bgm/morning.ogg" 0.8                        # 指定 volume
 play music "bgm/morning.ogg" 0.8 1.0                    # volume + fadein
 play music "bgm/morning.ogg" 0.8 1.0 1.0 (loop)        # 补全具名参数
 play sound "sfx/door.ogg" 0.6
+
+# queue：将音频加入通道队列，当前播放结束后自动播放
+# 位置参数顺序与 play 一致：路径 → volume → fadein → fadeout
+queue music "bgm/day.ogg"
+queue music "bgm/night.ogg" 0.6
+queue music "bgm/night.ogg" 0.6 1.0 (loop)
 
 # stop 位置参数顺序：fadeout
 stop music                              # 立即停止
@@ -330,6 +358,11 @@ say speaker "下一句。" (happy)          # 修饰符与对话行完全一致
 $ options = build_options(day, relationship)
 choice options (timeout=10.0)
 
+# 截图
+screenshot                              # 保存到 options_window.apy 配置的默认路径
+screenshot "screenshots/ch1_end.png"   # 指定路径
+screenshot (include_ui=true)            # 包含 UI 层（默认 false）
+
 # 禁用 / 恢复输入
 # 形式一：对称写法（enable / disable 独立调用）
 input disable                           # 全部禁用
@@ -391,10 +424,36 @@ image "map/region_a.png" (cursor=hover, on_click: jump region_a)   # 引用 opti
 # 优先级（从高到低）：
 # 变量 engine.cursor > cursor 指令 > 控件 cursor= 参数 > options_window.apy 全局默认
 
+# pass（空语句，什么都不做，用于占位）
+pass
+
 # 单行 Python（单行内 Python 语法合法即可）
 $ flag_met_eileen = True
 
 # 多行 Python
+python:
+    for item in inventory:
+        item.apply()
+
+# while 循环（rollback= 必须显式声明，否则解析器报错）
+while hp > 0 (rollback=none):
+    eileen: "还没结束！"
+    $ hp -= 10
+
+# for 循环（rollback= 必须显式声明）
+for item in inventory (rollback=none):
+    eileen: "我持有了{item.name}。"
+
+# break / continue（仅在 while / for 块内有效）
+while True (rollback=none):
+    $ hp -= 10
+    if hp <= 0:
+        break
+    if hp > 80:
+        continue
+    eileen: "还能撑住。"
+
+# 不需要对话行的循环推荐退回 python: 块
 python:
     for item in inventory:
         item.apply()
@@ -1006,6 +1065,29 @@ transform custom_ease:
 
 内置缓动：`linear`、`ease_in`、`ease_out`、`ease_in_out`、`bounce`、`elastic`。
 
+**自定义文本标签**
+
+通过 `startup` 块注册自定义标签，与引擎整体风格一致，不引入新语法：
+
+```apy
+startup:
+    python:
+        from axn_plus.apy.text_renderer import TextRenderer, ShakeEffect
+
+        # 注册自定义标签
+        TextRenderer.register_tag("shake", lambda content, args: ShakeEffect(content))
+        TextRenderer.register_tag("glow", lambda content, args: GlowEffect(content, color=args.get("color", "#ffffff")))
+```
+
+使用时与内置标签语法完全一致：
+
+```apy
+eileen: "这个字<shake>在颤抖</shake>。"
+eileen: "发光的<glow color=#ff8800>文字</glow>。"
+```
+
+`TextRenderer.register_tag(name, handler)` 中 `handler` 接收 `(content: list, args: dict)` 并返回渲染效果对象，继承 `TextEffect` 抽象类。自定义标签与内置标签优先级相同，同名时自定义标签覆盖内置标签并输出警告。
+
 **应用 transform：**
 
 ```apy
@@ -1217,6 +1299,8 @@ on key "escape":
 |------|------|---------|
 | label 进入 | `on enter <label>` | 执行流进入指定 label 的第一行之前 |
 | 按键 | `on key "<key>"` | 玩家按下对应键时 |
+| 存档前 | `on before_save` | 存档写入前，适合清理临时变量 |
+| 读档后 | `on after_load` | 读档完成后、执行流恢复前，适合重建显示状态 |
 
 `on change`（响应式变量监听）因实现成本高，暂不支持，后续考虑。
 
@@ -1258,6 +1342,46 @@ include "common/prologue.apy"
 编译期展开，等价于将目标文件内容内联到当前位置。与 `jump`/`call` 的区别：`include` 是编译期合并，不产生运行时跳转，也不创建独立的执行上下文。
 
 适用场景：跨章节复用的开场白、结局模板、通用菜单片段等。引擎启动时检测循环 `include`，发现时抛出错误并打印完整引用链。
+
+---
+
+**`expoint`（内容注入点）**
+
+专为内容注入设计的受控接口，定位是脚本流程层的可选 call。调用时运行时查找有没有对应定义，有就执行，没有就静默跳过。推荐用于 MOD 支持、DLC 内容注入、主题替换、多结局变体等场景，不推荐用于引擎或开发者生成的 Python 内容。
+
+三个操作可以独立存在，互不依赖：
+
+```apy
+# 创建（可选，语法糖，用于声明注入点、排查已定义的注入点列表）
+expoint = "after_prologue"
+expoint = "after_prologue" (type=dialogue)  # 类型约束：只允许注入对话行，违反时警告
+expoint = "after_prologue" (type=script)    # 默认，允许任意脚本内容
+
+# 定义（填充内容，可在任意 .apy 文件中定义，包括外部注入文件）
+expoint after_prologue:
+    eileen: "这是DLC注入的额外对话。"
+    $ dlc_flag = True
+
+# 覆盖定义（replace 语义，不触发多次定义警告）
+expoint after_prologue (replace):
+    eileen: "覆盖后的内容。"
+
+# 调用（主流程中的注入点，未定义时静默跳过）
+expoint after_prologue
+```
+
+**多次定义行为**：同一 `expoint` 被多个文件定义时，按加载顺序**追加执行**，引擎输出警告，可 ignore。需要覆盖语义时用 `(replace)`，此时不警告。
+
+**硬性限制**：定义块内禁止 `jump`（会破坏"注入后继续主流程"的语义），允许 `call`。违反时解析期报错。
+
+**与现有机制的区别**：
+
+| | `label` + `call` | `include` | `expoint` |
+|---|---|---|---|
+| 未定义时 | `AxnJumpError` 报错 | 编译期报错 | 静默跳过 |
+| 展开时机 | 运行时 | 编译期 | 运行时 |
+| 多次定义 | 冲突报错 | — | 追加执行，警告 |
+| 目标用户 | 开发者 | 开发者 | MOD作者、DLC、内容扩展 |
 
 ---
 
@@ -1321,6 +1445,20 @@ include "common/prologue.apy"
 | `freeze` / `unfreeze` | 脚本区控件冻结积木块，控件名或层名字段可编辑 |
 | `startup (before/after)` | 脚本区初始化阶段节点，独立于流程图展示 |
 | `notify` / `notify system` | 脚本区通知积木块；`system` 标注为系统级通知 |
+| `while` / `for` 循环 | 脚本区循环积木块；`rollback=` 字段必填，显示回滚策略标签；`break`/`continue` 显示为循环内控制流节点 |
+| `pass` | 脚本区空操作占位节点，灰色显示 |
+| `queue music/sound/ambient` | 音频积木块的队列节点，与 `play` 节点同类，标注"队列追加" |
+| `transition` 独立指令 | 脚本区全屏过渡积木块，过渡名下拉列表，duration 字段可编辑 |
+| `screenshot` | 脚本区截图积木块，路径字段可编辑，`include_ui` 开关 |
+| `show (handle=)` / `show (alias=)` | `handle=` 显示句柄名字段；`alias=` 显示实例名字段；使用旧 `as` 写法时以黄色警告标注"建议改用参数化写法" |
+| `show (alias=)` 多实例 | 脚本区多实例节点，alias 名字段可编辑；hide/expression 按 alias 名操作时显示实例来源 |
+| `on before_save` / `on after_load` | 编辑器独立事件钩子面板，与 `on enter`/`on key` 并列展示 |
+| 自定义文本标签 | `startup` 块内代码节点；标注"通过 TextRenderer.register_tag 注册自定义标签"；使用时在对话积木块内高亮显示自定义标签名 |
+| `expoint = "name"` 声明 | 注入点面板独立区域，列出所有已声明的注入点，显示类型约束 |
+| `expoint name:` 定义 | 代码节点（内容任意，GUI 不解析归属）；面板标注"已有定义"绿色标记 |
+| `expoint name (replace):` | 代码节点，标注"覆盖定义"；与普通定义节点视觉区分 |
+| `expoint name` 调用 | 脚本区独立积木块，标注"可选，未定义时跳过"；已有定义时显示绿色指示，未定义时显示灰色 |
+| 开发者工具 | 编辑器集成调试面板；发布包中完全剥离（灰色标注"release 不包含"） |
 | 动态 `show $sprite` / `jump $target` | 脚本区动态指令节点，变量名字段可编辑，与静态版本视觉区分 |
 
 ### 静态与动态修饰符
@@ -1426,7 +1564,16 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 | `resume transform` | 动画句柄名 | — |
 | `freeze` | 控件名（可选） | `layer` |
 | `unfreeze` | 控件名（可选） | `layer` |
-| `startup` | — | `before` / `after`（阶段标记） |
+| `queue music/sound/ambient` | 路径 → volume → fadein → fadeout | `loop` |
+| `transition` | 过渡名 → duration | — |
+| `screenshot` | 路径（可选） | `include_ui` |
+| `expoint` （调用） | 注入点名 | — |
+| `while` | — | `rollback`（必须显式声明） |
+| `for` | 变量名 `in` 可迭代对象 | `rollback`（必须显式声明） |
+| `pass` | — | — |
+| `break` / `continue` | — | — |
+| `on before_save` | — | — |
+| `on after_load` | — | — |
 | `notify` | 消息字符串 | `icon` `duration` `priority` |
 | `notify system` | 消息字符串 | `subtitle` `icon` |
 
@@ -1436,7 +1583,21 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 ### 关键设计决策
 
-**`cursor` 指令与光标控制**：光标控制提供三种层级，优先级从高到低依次为：`engine.cursor` 变量（最高，适合状态联动）、`cursor` 指令（命令式，适合演出流程中的即时切换）、控件 `cursor=` 具名参数（样式绑定，鼠标进入控件时自动切换，离开时恢复上层光标）、`options_window.apy` 全局默认（最低）。`cursor default` 和 `$ engine.cursor = "default"` 恢复到全局默认光标；`cursor none` / `$ engine.cursor = "none"` 隐藏光标。控件 `cursor=` 参数接受路径字符串或 `options_window.apy` 中定义的具名光标关键字（如 `hover`、`drag`）。光标切换不产生过渡动画，立即生效。对话修饰符修改角色的**持久表情状态**，与角色是否可见无关；`show` 出场时使用角色当前表情状态，不重置为 `default_expression`。`show` 指令仅控制位置和可见性，不影响表情状态。无对话时切换表情使用独立的 `expression` 指令，支持可选的 `transition` 参数。
+**`show` 的 `handle=` / `alias=` 与旧 `as` 写法**：推荐参数化写法——`handle=` 获取动画句柄，`alias=` 命名多实例。旧 `as` 写法保留但引擎运行时输出警告，可 ignore，符合兼容性容错原则。`alias=` 命名的实例与原角色完全独立，位置、表情、transform 状态互不影响，`hide`/`expression` 按 alias 名操作。
+
+**`show` 多实例语义**：同一角色可通过 `alias=` 同时存在多个独立实例，适用于回忆、幻觉、镜像等演出场景。每个实例独立维护自己的可见性、位置和表情状态，引擎内部以 `(角色名, alias名)` 作为唯一标识。未指定 `alias=` 时默认实例名为角色名本身。
+
+**`while`/`for` 循环的回滚策略**：循环块内包含对话行时，回滚语义不明（回到圈首？回到上一行？），因此 `rollback=` 是必须显式声明的参数，缺失时解析器报错。绝大多数循环场景建议使用 `rollback=none`。不包含对话行的纯逻辑循环推荐退回 `python:` 块。`break`/`continue` 仅在 `while`/`for` 块内有效，出现在块外时解析期报错。
+
+**`transition` 独立指令**：全屏过渡，不切换任何内容。替代 Ren'Py 独立 `with` 语句在"纯屏幕过渡"场景的用途，语义比 `with dissolve` 更明确（明确是全屏操作，不依附于任何 show/hide/scene）。过渡名与 `show`/`hide`/`scene` 的 `enter`/`exit`/`with` 参数共享同一套过渡库。
+
+**`queue` 音频指令**：将音频加入通道串行队列，当前播放结束后自动播放。引擎内部队列机制已存在（上限16，可配置），`queue` 是对外暴露的脚本接口。参数结构与 `play` 完全一致。
+
+**`expoint` 设计原则**：定位是脚本流程层的可选 call，专为内容注入设计的受控接口。三个操作（声明/定义/调用）完全独立，可单独存在。核心语义：调用时运行时查找定义，有则执行，无则静默跳过。多次定义追加执行并警告；`(replace)` 覆盖语义不警告。定义块内禁止 `jump`（破坏"注入后继续主流程"语义），允许 `call`。面向 MOD 作者、DLC、内容扩展，不推荐用于引擎或开发者生成的 Python 内容。
+
+**开发者工具**：开发模式（`axn run`）内置，Shift+\` 呼出。包含控制台（执行 Python 表达式）、变量浏览器（实时查看/编辑 store）、label 跳转、截图（F12）。发布包完全剥离。后续集成进 Axn-Editor，命令行版本始终保留。光标控制提供三种层级，优先级从高到低依次为：`engine.cursor` 变量（最高，适合状态联动）、`cursor` 指令（命令式，适合演出流程中的即时切换）、控件 `cursor=` 具名参数（样式绑定，鼠标进入控件时自动切换，离开时恢复上层光标）、`options_window.apy` 全局默认（最低）。`cursor default` 和 `$ engine.cursor = "default"` 恢复到全局默认光标；`cursor none` / `$ engine.cursor = "none"` 隐藏光标。控件 `cursor=` 参数接受路径字符串或 `options_window.apy` 中定义的具名光标关键字（如 `hover`、`drag`）。光标切换不产生过渡动画，立即生效。对话修饰符修改角色的**持久表情状态**，与角色是否可见无关；`show` 出场时使用角色当前表情状态，不重置为 `default_expression`。`show` 指令仅控制位置和可见性，不影响表情状态。无对话时切换表情使用独立的 `expression` 指令，支持可选的 `transition` 参数。
+
+**兼容性写法容错原则**：混杂写法或语义混乱的情况默认允许，引擎运行到对应节点时抛出报错提示，可 ignore 以继续进程。推荐已有的标准写法，但不阻止开发者使用非标准写法，由此产生的问题由开发者负责。此原则适用于所有非歧义、非引擎严重影响的兼容性问题。
 
 **Python 块边界**：`$` 后允许任何在单行内 Python 语法合法的内容，包括三元表达式、多重赋值等（如 `$ x = 1 if flag else 2`、`$ a, b = b, a`）。需要换行的复合逻辑使用 `python:` 块，换行符即边界，无需记额外规则。
 
@@ -3550,6 +3711,18 @@ engine:
         disable:
             axn::map
             axn::clue_board
+
+    autosave:
+        enabled          = true
+        trigger          = "checkpoint"   # checkpoint：只在 checkpoint 指令处自动存（推荐）
+                                          # on_dialogue：每条对话后存（性能较差）
+        slot             = "autosave"     # 独立存档槽，不覆盖手动存档
+
+    screenshot:
+        enabled          = true           # 开发模式默认开启
+        key              = "f12"          # 快捷键，Steam 风格
+        path             = "screenshots/" # 保存目录，相对项目根目录
+        include_ui       = false          # true 时截图包含 UI 层
 ```
 
 规则说明：
@@ -3894,6 +4067,20 @@ engine:
     locale = "zh"                       # 错误信息语言跟随此设置
     ignore_multiline_dollar = false     # true 时静默 $ 多行续行警告
 ```
+
+#### 开发者工具
+
+开发模式下（`axn run`）内置调试面板，Shift+\` 呼出，不依赖 Axn-Editor：
+
+**控制台**：可执行任意 Python 表达式，结果直接打印到面板，等价于在当前 store 上下文里执行。
+
+**变量浏览器**：树状展示 `store` 和 `persistent` 的所有变量，支持实时编辑基础类型值。
+
+**Label 跳转**：输入 label 名，引擎立即跳转到该 label 开始执行，call 栈丢弃（与读档行为一致）。
+
+**截图快捷键**：F12 保存当前画面到 `screenshots/` 目录（可在 `options_window.apy` 配置）。
+
+发布包（`axn build`）中开发者工具完全剥离，不包含在包体内。后续集成进 Axn-Editor 作为调试面板，但命令行工具版本始终保留。
 
 #### `$` 行括号续行
 
