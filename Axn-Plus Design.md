@@ -2682,6 +2682,99 @@ scroll vertical:
 
 `screen` 定义一个完整的 UI 画面，职责是**布局**——把控件组合成完整的 UI 画面。`gui` 负责控件的定义和复用，`screen` 负责把这些控件组织到一起。
 
+#### 声明语法
+
+`screen` 支持函数签名风格参数，与 `label`、`gui` 保持一致：
+
+```apy
+screen hud:                          # 无参数
+    ...
+
+screen common_header(title):         # 有参数
+    text title (font_size=24, anchor=top_center)
+
+screen save_slot(slot_id, label="空存档"):   # 带默认值
+    ...
+```
+
+#### 调用语法
+
+**`show screen`**：非阻塞显示，screen 持续存在直到手动 `hide`：
+
+```apy
+show screen hud                      # 显示，不阻塞执行流
+show screen hud (layer=effect)       # 指定层级
+hide screen hud                      # 手动关闭
+```
+
+**`call screen`**：阻塞执行流，等 screen 关闭后继续：
+
+```apy
+call screen save_menu                # 阻塞，不接返回值
+call screen save_menu as result      # 阻塞，接返回值
+```
+
+`call screen` 默认在关闭时自动销毁。需要关闭后保留（如动画过渡期间）时，加显式参数：
+
+```apy
+call screen save_menu (keep)         # 关闭后保留，需手动 hide
+```
+
+screen 内部通过 `Return()` 传递返回值并触发关闭：
+
+```apy
+screen confirm_dialog:
+    button "确认" on_click: Return("confirm")
+    button "取消" on_click: Return("cancel")
+```
+
+```apy
+call screen confirm_dialog as result
+if result == "confirm":
+    jump delete_save
+```
+
+**`call screen` 与 `modal show` 的区别**：
+
+| | `call screen` | `modal show` |
+|---|---|---|
+| 执行流 | 阻塞 | 阻塞 |
+| 焦点接管 | ❌ 不接管 | ✅ 接管 |
+| 输入屏蔽 | ❌ 不屏蔽底层 | ✅ 屏蔽底层 |
+| 返回值 | `as result` | `as result` |
+| 适用场景 | 普通界面切换 | 需要强制用户响应的模态交互 |
+
+#### 生命周期
+
+`screen` 默认挂在 `ui` 层。`scene` 切换时清除（与 `ui` 层上的其他元素行为一致）。需要持久时显式指定持久层：
+
+```apy
+show screen hud (layer=persistent_hud)   # 手动指定持久层，scene 不清除
+```
+
+多个 `show screen` 叠加显示，不互相替换：
+
+```apy
+show screen hud
+show screen dialogue_box    # 与 hud 同时显示，叠加在上方
+```
+
+#### Python 块限制
+
+`screen` 块内允许 `$` 和 `python:` 块，但**复杂逻辑必须先用 `$` 算好，不能内联**。简单变量引用和条件判断可以直接用：
+
+```apy
+screen status_panel:
+    # 简单引用：直接内联，OK
+    text "{store['player_name']}"
+    if store["hp"] <= 0:
+        text "已阵亡" (color=#ff0000)
+
+    # 复杂逻辑：先算好
+    $ status_text = get_status_summary(store["flags"])
+    text status_text
+```
+
 绝对定位完全可用，同时扩展了语义化相对定位能力。
 
 ```apy
@@ -2748,36 +2841,57 @@ pause_menu()    # 等价于 use pause_menu()
 
 ### `gui`（Pygame 精细控件）
 
-`gui` 定义可复用的控件组件，职责是**控件的封装与复用**。默认在 `ui` 层，可通过 `layer=` 指定其他层。层级决定持久性——跟层走，不跟控件走。
+`gui` 定义可复用的控件组件，职责是**控件的封装与复用**。既可以嵌入 `screen` 内使用，也可以在脚本层单独 `show` / `hide`。
 
-```apy
-gui health_bar(value, max_value, color=#ff0000):
-    size (200, 20)
-    background #333333
-    fill:
-        width value / max_value * 200
-        color color
-    text "{value}/{max_value}":
-        anchor right
-        font_size 12
-```
+#### 调用语法
 
-**`gui` 可以放在非 `ui` 层：**
-
-```apy
-gui effect_overlay:
-    layer effect        # 跟随场景，scene 切换时清除
-
-gui hud:                # 默认 ui 层，持久
-    ...
-```
-
-**`screen` 和 `gui` 可以互相嵌套：**
+**嵌入 `screen` 内**：直接调用，无需 `show`：
 
 ```apy
 screen hud:
-    health_bar(80, 100)             # 在 screen 内调用 gui 控件
+    health_bar(80, 100)
     health_bar(60, 100, color=#0000ff)
+```
+
+**脚本层单独使用**：通过 `show gui` / `hide gui` 控制：
+
+```apy
+show gui hud                         # 显示，默认挂 ui 层（持久）
+show gui effect_overlay (layer=effect)   # 指定层，跟随场景
+hide gui hud                         # 手动隐藏
+```
+
+`gui` 没有 `call gui` 用法——阻塞与返回值是 `screen` 的职责。需要阻塞交互时，把 `gui` 控件嵌入 `screen` 内，再用 `call screen`。
+
+#### 生命周期
+
+**`gui` 是"控件"概念，`screen` 是"画面"概念，两者生命周期语义不同：**
+
+| | `show gui` | `show screen` |
+|---|---|---|
+| 默认层 | `ui` 层（持久） | `ui` 层 |
+| `scene` 切换 | **不清除**（持久，适合 HUD 等常驻控件） | 清除 |
+| 手动关闭 | `hide gui 名字` | `hide screen 名字` |
+
+**嵌入 `screen` 内的 `gui`**：生命周期跟 `screen` 走，`screen` 关闭时一并销毁。默认与 `screen` 同层，需要独立层级时在 `gui` 块内显式指定：
+
+```apy
+screen battle_hud:
+    health_bar(80, 100)              # 跟 screen 同层，screen 关闭时销毁
+
+gui persistent_notice:
+    layer ui                         # 显式指定层，即使在 screen 内也保持独立生命周期
+    ...
+```
+
+**`gui` 可以放在非 `ui` 层**，此时生命周期跟层走：
+
+```apy
+gui effect_overlay:
+    layer effect        # 挂 effect 层，scene 切换时清除
+
+gui hud:                # 默认 ui 层，持久，scene 不清除
+    ...
 ```
 
 #### 控件定义语法
