@@ -177,6 +177,26 @@ define char eileen:
     # 要么全部走声明顺序（不写 z_order），要么全部写 z_order，不允许混用
     # 混用时引擎启动报错
 
+# 响应式 triggers：角色可见时监听 store 变量，条件满足时自动触发动画
+# 只在角色可见时监听，hide 后自动暂停，show 后恢复
+define char eileen:
+    name "Eileen"
+    layers:
+        ...
+    triggers:
+        when store["hp_ratio"] < 0.2:
+            transform breathe_heavy             # 替换当前 transform
+        when store["relationship"]["eileen"] >= 80:
+            transform += glow_soft              # 追加 transform，保留现有
+        when store["day"] != store["prev_day"]:
+            call animation day_change           # 触发 animation
+
+# triggers 规则：
+# - 每帧检查条件，false → true 时触发一次，不重复触发
+# - 条件只允许 store 变量的简单比较（==、!=、>、<、>=、<=），不允许函数调用
+# - 回滚后清空所有 trigger 的触发状态，等下次 false → true 才重新触发
+# - 复杂条件退回 python: 块 + on key / on enter 手动处理
+
 # expression 指令：无对话时切换表情（states 和 layers 模型均支持）
 expression eileen happy                      # 走 expressions 映射（layers 模型）或整图切换（states 模型）
 expression eileen (face=happy, brow=angry)   # 直接指定各层，绕过 expressions 映射（仅 layers 模型）
@@ -788,10 +808,11 @@ animation eileen_exit:
 
 ```apy
 call animation eileen_enter
-call animation eileen_enter as anim   # 用 as 接句柄，配合 wait for 使用
+call animation eileen_enter (handle=anim)   # 用 handle= 接句柄，配合 wait for 使用
+call animation eileen_enter as anim         # 兼容写法，运行时警告可 ignore
 ```
 
-`as anim` 得到的是 `AnimationHandle` 对象，只暴露以下接口：
+`handle=anim` 得到的是 `AnimationHandle` 对象，只暴露以下接口：
 
 ```python
 anim.done        # bool，动画是否完成
@@ -821,11 +842,99 @@ animation char_exit(char, duration=0.3):
 
 ```apy
 call animation char_enter(eileen, "left")
-call animation char_enter(eileen, "left") as anim
+call animation char_enter(eileen, "left") (handle=anim)
 call animation char_enter(eileen)          # 使用默认参数
 ```
 
 参数类型限制：只允许角色名、位置关键字、数值、字符串字面量，不允许传入 Python 表达式——`animation` 块内不允许 Python，参数也不应该是 Python 表达式，否则 GUI 无法解析调用点。需要动态参数时退回 `label` + Python 块处理。
+
+**`animation` 条件分支**
+
+`animation` 块内允许基于参数变量的简单条件分支，不允许引用 store 变量，保证 GUI 完整可解析：
+
+```apy
+animation char_enter(char, mood="neutral"):
+    show char right 0.0
+    if mood == "happy":
+        show char (transform=bounce_in)
+    elif mood == "sad":
+        show char (transform=fade_in_slow)
+    else:
+        show char (transform=fade_in)
+    wait for all
+```
+
+条件只允许参数变量的简单比较（`==`、`!=`、`>`、`<`），不允许 store 变量或函数调用。需要响应 store 状态时退回 `label` + Python 块处理。GUI 将条件分支解析为多路分支节点。
+
+**`animation` 的 `yield` 暂停点**
+
+`yield` 在 animation 执行流中插入一个命名暂停点，animation 暂停在此等待外部 `resume`，调用方的执行流继续向下运行：
+
+```apy
+animation boss_enter:
+    show boss center 0.0 (transform=slam_down)
+    wait for all
+    yield "boss_landed"          # animation 暂停，调用方继续执行
+    camera shake 10 0.5
+    play sound "sfx/roar.ogg"
+```
+
+```apy
+# 调用方
+call animation boss_enter (handle=anim_boss)
+# animation 暂停在 yield，调用方继续向下执行
+eileen: "它来了！"
+sophia: "快跑！"
+resume animation anim_boss      # 手动恢复，camera shake + roar 在这里触发
+```
+
+**`yield` 规则：**
+
+- `yield` 只暂停 animation 自身，调用方的 track / label 继续执行，互不阻塞
+- `resume animation <handle>` 从 yield 点继续，与调用方执行流完全独立
+- `hide` 对象时若有未 `resume` 的 animation，输出警告，animation 随对象一起丢弃：
+
+```
+AxnWarning: [animation] 'boss_enter' has unresumed yield point 'boss_landed'.
+  Animation will be discarded on hide.
+  Consider calling 'resume animation anim_boss' before hiding.
+  → scene.apy, line 28
+```
+
+**`animation loop` 块**
+
+`animation` 块内支持 `loop` 循环结构，用于重复演出直到条件满足：
+
+```apy
+animation battle_idle:
+    loop until store["battle_end"]:   # 条件只允许 store 变量简单比较
+        camera shake 3 0.3
+        wait 1.5
+    camera reset 0.5
+```
+
+无条件循环用 `loop`（不加 `until`），需要外部打断时配合 `yield` 使用：
+
+```apy
+animation ambient_loop:
+    loop:
+        play sound "sfx/wind.ogg"
+        wait 3.0
+        yield "loop_tick"           # 外部可选择性 resume 或 cancel
+```
+
+**`loop` 与存档的交互：**
+
+| loop 类型 | 存档行为 |
+|-----------|---------|
+| `loop`（无条件） | 禁止存档，手动存档直接拒绝并提示 |
+| `loop until` | 挂起存档，条件满足 loop 结束后自动执行 |
+
+```
+AxnWarning: Save rejected: an unconditional 'animation loop' is running.
+  Unconditional loops cannot be safely checkpointed.
+  → battle_idle animation, scene.apy, line 8
+```
 
 **`show` 不阻塞执行流**
 
@@ -1088,13 +1197,81 @@ eileen: "发光的<glow color=#ff8800>文字</glow>。"
 
 `TextRenderer.register_tag(name, handler)` 中 `handler` 接收 `(content: list, args: dict)` 并返回渲染效果对象，继承 `TextEffect` 抽象类。自定义标签与内置标签优先级相同，同名时自定义标签覆盖内置标签并输出警告。
 
+**`then` 链式串行**
+
+`then` 在 `transform` 块内声明串行后续动画，替代 `compose=sequence`：
+
+```apy
+transform enter_then_breathe:
+    then complex_enter       # 先播 complex_enter（repeat 1）
+    then breathe             # 完成后接 breathe（repeat forever）
+```
+
+`then` 只在 `repeat 1` / `repeat N` 的 transform 之后有意义。若 `then` 前的 transform 为 `repeat forever`，解析期报错：
+
+```
+AxnParseError: 'then' after 'repeat forever' transform will never execute.
+  'then' requires a finite transform (repeat 1 or repeat N) before it.
+  → characters.apy, line 8
+```
+
+**`on_complete` 回调**
+
+transform 完成后自动触发的后续操作，只允许有限操作保证 GUI 可解析：
+
+```apy
+transform entrance_flash:
+    keyframe 0.0: alpha 0.0
+    keyframe 0.3: alpha 1.0
+    repeat 1
+    on_complete: transform += idle_float    # 完成后自动追加后台动画
+```
+
+`on_complete` 只允许以下操作：
+- `transform =` / `transform +=` / `transform = none`
+- `emit "event_name"`
+
+不允许对话行、jump、Python 块，保证 GUI 完整可解析。
+
+`on_complete` 用于 `repeat forever` 时解析期报错：
+
+```
+AxnParseError: 'on_complete' has no effect on 'repeat forever' transform.
+  'on_complete' requires a finite transform (repeat 1 or repeat N).
+  → characters.apy, line 15
+```
+
+**`mode`（绝对 / 相对模式）**
+
+`transform` 默认以绝对值定义 keyframe 属性。`mode relative` 时所有属性值相对于对象当前状态叠加：
+
+```apy
+transform nudge_right:
+    keyframe 0.0: x_offset +0
+    keyframe 0.2: x_offset +20
+    keyframe 0.4: x_offset +0
+    repeat 1
+    mode relative       # 相对当前位置，可安全叠加在任何位置的角色上
+```
+
+| `mode` 值 | 行为 |
+|-----------|------|
+| `absolute`（默认） | keyframe 属性值为绝对值 |
+| `relative` | keyframe 属性值相对于对象当前状态叠加 |
+
 **应用 transform：**
 
 ```apy
 show eileen center (transform=shake_x)                              # 单个
 show eileen center (transform=[breathe, shake_x])                   # 多个并行叠加
-show eileen center (transform=[enter_scale, hover_scale], compose=sequence)  # 串行
 show eileen center (transform=shake_x(duration=0.2))               # 覆盖 duration
+```
+
+`compose=sequence` 保留但警告，推荐改用 `then` 链式写法：
+
+```
+AxnWarning: [transform] 'compose=sequence' is deprecated. Use 'then' chain instead.
+  → scene.apy, line 12
 ```
 
 **叠加模型（`compose`）：**
@@ -1102,7 +1279,7 @@ show eileen center (transform=shake_x(duration=0.2))               # 覆盖 dura
 | `compose` 值 | 行为 |
 |---|---|
 | `parallel`（默认） | 所有 transform 同时运行，属性冲突取列表最后一个，引擎启动时对已知冲突输出警告 |
-| `sequence` | 串行，前一个 `repeat 1` 完成后启动下一个；遇到 `repeat forever` 则阻塞在此，之后的 transform 永远不会执行，引擎启动时输出警告 |
+| `sequence` | 已废弃，保留但警告，推荐改用 `then` |
 
 **触发与停止模型：**
 
@@ -1129,6 +1306,17 @@ show eileen (transform=none)          # 显式停止所有 transform
 `transform` 块覆盖不了的场景（帧动画、骨骼、物理），直接用 Python 类，`show` 接受任何实现了 `AnimatedSprite` 接口的对象：
 
 ```python
+class AnimatedSprite:
+    def update(self, dt: float): ...          # 每帧调用，返回当前帧 surface
+    def on_show(self): ...                    # show 时调用
+    def on_hide(self): ...                    # hide 时调用
+    def on_pause(self): ...                   # pause transform 时调用
+    def on_resume(self): ...                  # resume transform 时调用
+    def on_snapshot(self) -> dict: ...        # 存档时调用（与 @restorable 统一接口）
+    def on_restore(self, data: dict): ...     # 读档时调用
+```
+
+```python
 class LivePortrait(AnimatedSprite):
     def __init__(self, char):
         self.frames = char.load_frames()
@@ -1137,11 +1325,22 @@ class LivePortrait(AnimatedSprite):
     def update(self, dt):
         self.timer += dt
         return self.frames[int(self.timer * 12) % len(self.frames)]
+
+    def on_show(self):
+        self.timer = 0.0
+
+    def on_snapshot(self) -> dict:
+        return {"timer": self.timer}
+
+    def on_restore(self, data: dict):
+        self.timer = data["timer"]
 ```
 
 ```apy
 show LivePortrait(eileen) center
 ```
+
+`AnimatedSprite` 的生命周期钩子与 `@restorable` 接口统一——`on_snapshot` / `on_restore` 即 `__snapshot__` / `__restore__` 的别名，两种写法均可，引擎内部统一处理。
 
 **`animation` 与 `transform` 的边界：**
 
@@ -1394,14 +1593,20 @@ expoint after_prologue
 | `{expr}` 插值 | 对话积木块内内联编辑，表达式作为文本字段 |
 | `[A\|B]` 条件文本 | 对话积木块内内联编辑，A/B 作为独立字段 |
 | `translate` 块 | 对话积木块的多语言标签页 |
-| `animation` block | 脚本区独立节点，内容可完整解析为子积木序列 |
+| `animation` block | 脚本区独立节点，内容可完整解析为子积木序列；条件分支显示为多路分支节点；`yield` 显示为暂停点标记；`loop` / `loop until` 显示为循环节点 |
 | `parallel / track` | 脚本区时间轴视图 |
 | `with store` 块 | 脚本区代码节点（与 `python:` 块同等处理）；块内只允许顶层赋值，违反时编辑器解析期报错 |
 | `const` | 脚本区只读常量节点 |
 | `template / extends` | 窗口区组件继承树 |
-| `transform` block | 脚本区 keyframe 时间轴编辑器，属性列表完整可解析；`compose`、`repeat pingpong`、逐段 easing 均可解析 |
+| `transform` block | 脚本区 keyframe 时间轴编辑器，属性列表完整可解析；`repeat pingpong`、逐段 easing、`mode relative`、`on_complete`、`then` 链式串行均可解析 |
 | `transform+=` | 脚本区追加节点，与 `transform=` 节点同类 |
-| `AnimatedSprite` Python 类 | 脚本区代码节点（与 `python:` 块同等处理） |
+| `transform then` | 时间轴编辑器内串行节点，显示为顺序连接的 transform 块 |
+| `transform on_complete` | 时间轴编辑器内完成回调字段，显示触发操作 |
+| `transform mode relative` | 时间轴编辑器内模式标记，属性值显示为相对偏移 |
+| `triggers` 块 | 角色定义积木块内的响应式触发器面板；条件字段可编辑；触发操作显示对应 transform / animation 节点 |
+| `AnimatedSprite` Python 类 | 脚本区代码节点（与 `python:` 块同等处理）；生命周期钩子在节点属性面板中列出 |
+| `animation yield` | 脚本区暂停点积木块，显示 yield 名称字段；`resume animation` 节点与之对应显示关联句柄 |
+| `animation loop` | 脚本区循环积木块；`loop until` 显示条件字段；`loop`（无条件）标注"存档禁用" |
 | `transition`（内置） | 参数选择器，下拉列表 |
 | `transition`（自定义 Python 类） | 脚本区代码节点 |
 | `states` 声明 | 角色定义积木块内的状态表编辑器 |
@@ -1583,7 +1788,7 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 ### 关键设计决策
 
-**`show` 的 `handle=` / `alias=` 与旧 `as` 写法**：推荐参数化写法——`handle=` 获取动画句柄，`alias=` 命名多实例。旧 `as` 写法保留但引擎运行时输出警告，可 ignore，符合兼容性容错原则。`alias=` 命名的实例与原角色完全独立，位置、表情、transform 状态互不影响，`hide`/`expression` 按 alias 名操作。
+**`show` 的 `handle=` / `alias=` 与旧 `as` / `at` 写法**：推荐参数化写法——`handle=` 获取动画句柄，`alias=` 命名多实例。旧 `as` / `at` 写法保留但引擎运行时输出警告，可 ignore，符合兼容性容错原则。`with` 关键字已被 `with char` / `with store` 占用，用于 `show` 时解析期直接报错（真实歧义，非兼容问题）。`at` 只接位置关键字（`left` / `center` / `right` 等），不接 transform；transform 只走 `(transform=X)` 具名参数。`alias=` 命名的实例与原角色完全独立，位置、表情、transform 状态互不影响，`hide`/`expression` 按 alias 名操作。
 
 **`show` 多实例语义**：同一角色可通过 `alias=` 同时存在多个独立实例，适用于回忆、幻觉、镜像等演出场景。每个实例独立维护自己的可见性、位置和表情状态，引擎内部以 `(角色名, alias名)` 作为唯一标识。未指定 `alias=` 时默认实例名为角色名本身。
 
@@ -1631,11 +1836,29 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 **transform easing**：支持全局声明和逐 keyframe 声明（`keyframe T (easing=X):`），逐段优先级高于全局，全局未声明时默认 `linear`。
 
-**transform 叠加冲突**：`compose=parallel`（默认）时属性冲突取列表最后一个，不做混合，引擎启动时输出警告。`compose=sequence` 时串行执行，`repeat forever` 之后的 transform 永远不会执行，引擎启动时输出警告。
+**transform 叠加冲突**：`compose=parallel`（默认）时属性冲突取列表最后一个，不做混合，引擎启动时输出警告。`compose=sequence` 已废弃，保留但运行时警告，推荐改用 `then` 链式写法。
 
 **transform 触发与停止**：`show eileen (transform=X)` 替换全部现有 transform；`show eileen` 无 transform 参数时保留当前 transform（移动位置不打断循环动画）；`transform+=X` 追加；`transform=none` 显式停止所有；`hide` 时自动停止所有附属 transform。
 
-**keyframe 折叠规则**：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致，解析器无歧义。
+**transform `then` 链式串行**：在 `transform` 块内用 `then` 声明串行后续动画，替代已废弃的 `compose=sequence`。`then` 之前的 transform 必须为有限动画（`repeat 1` / `repeat N`），否则解析期报错。
+
+**transform `on_complete` 回调**：有限动画（`repeat 1` / `repeat N`）完成后自动触发，只允许 `transform =` / `transform +=` / `transform = none` / `emit`，不允许其他操作。用于 `repeat forever` 时解析期报错。
+
+**transform `mode`（绝对/相对模式）**：`mode absolute`（默认）keyframe 属性值为绝对值；`mode relative` 时属性值相对对象当前状态叠加，可安全叠加在任意位置的角色上。
+
+**transform 响应 store 变量**：keyframe 表达式中允许引用 store 变量做简单运算，但不推荐，运行时输出警告可 ignore。响应式动画的推荐方案是 `triggers` 块或 `AnimatedSprite`。
+
+**`triggers` 响应式触发**：在 `define char` 内声明，只在角色可见时监听，`hide` 后自动暂停，`show` 后恢复。条件只允许 store 变量简单比较，每帧检查，false → true 时触发一次不重复。回滚后清空所有 trigger 触发状态，等下次 false → true 才重新触发。
+
+**`animation` 条件分支**：`animation` 块内允许基于参数变量的简单条件分支（`if` / `elif` / `else`），不允许引用 store 变量，保证 GUI 完整可解析为多路分支节点。需要响应 store 状态时退回 `label` + Python 块处理。
+
+**`animation yield` 暂停点**：`yield` 只暂停 animation 自身，调用方 track / label 继续执行。`resume animation <handle>` 从 yield 点继续。`hide` 对象时若有未 resume 的 animation，输出警告，animation 随对象丢弃。
+
+**`animation loop` 块**：`loop`（无条件）执行期间禁止存档，手动存档直接拒绝；`loop until` 执行期间挂起存档，条件满足 loop 结束后自动执行。
+
+**`AnimatedSprite` 生命周期钩子**：新增 `on_show` / `on_hide` / `on_pause` / `on_resume` / `on_snapshot` / `on_restore` 六个钩子。`on_snapshot` / `on_restore` 与 `@restorable` 的 `__snapshot__` / `__restore__` 统一接口，两种写法均可，引擎内部统一处理。
+
+**`keyframe 折叠规则**：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致，解析器无歧义。
 
 **transition 扩展**：内置过渡由引擎标准库提供，自定义过渡继承 `Transition` 抽象类，通过 `apply(surface, progress)` 接口实现，直接传实例到具名参数，不引入新语法。
 
