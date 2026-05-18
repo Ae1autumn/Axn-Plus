@@ -135,7 +135,8 @@ define char eileen_casual extends eileen:
             # school 继承父定义
 
 # 继承规则：
-# - 只允许单继承，不允许链式（A extends B extends C）
+# - 支持链式继承（A extends B extends C），但引擎启动时输出警告，可 ignore
+# - 链式继承字段展开顺序为从根到叶，子类覆盖父类；建议保持单层继承以维持可读性
 # - 继承只发生在编译期展开，运行时 eileen_adult 与 eileen 是完全独立的对象
 # - show eileen_adult 和 show eileen 互不影响
 # - 运行时修改 eileen 的层状态（表情、换装等），eileen_adult 完全不受影响，反之亦然
@@ -588,6 +589,83 @@ call morning_scene("happy") as result
 
 return
 ```
+
+### `define image`（非角色分层图片对象）
+
+`define char` 解决角色立绘的分层需求，`define image` 解决**非角色**可显示对象的分层需求——道具、背景元素、环境特效、装饰图等。不需要单开一个角色，也不携带任何角色专属字段（`voice_prefix`、`dialogue_box`、`side_image` 等）。
+
+```apy
+# 静态图片别名（最简形式，进符号表，show 可用裸名字）
+define image bg_room = "assets/bg/room.png"
+
+# states 模型：整图切换
+define image weather_overlay:
+    states:
+        clear "fx/clear.png"
+        rain  "fx/rain.png"
+        snow  "fx/snow.png"
+    default_expression "clear"
+
+# layers 模型：分层叠加（核心用途）
+define image lantern:
+    layers:
+        base    "props/lantern_base.png"
+        glow:
+            bright "props/lantern_glow_bright.png"
+            dim    "props/lantern_glow_dim.png"
+        flicker:
+            active "props/lantern_flicker.png"
+            none   "props/lantern_static.png"
+    expressions:
+        on:  (glow=bright, flicker=active)
+        off: (glow=dim,    flicker=none)
+    default_expression "off"
+
+# triggers 同样支持（响应 store 变量）
+define image alarm_light:
+    layers:
+        light:
+            red  "fx/alarm_red.png"
+            off  "fx/alarm_off.png"
+    triggers:
+        when store["alert_level"] >= 3:
+            transform blink_red
+```
+
+使用方式与 `show` 完全一致，`expression`、`hide`、`alias=` 均适用：
+
+```apy
+show lantern right
+expression lantern on
+expression lantern (glow=bright, flicker=none)   # 直接指定各层
+show lantern (alias=lantern2, transform=sway)    # 多实例
+hide lantern 0.5 (exit=fadeout)
+```
+
+**`define image` 与 `define char` 的边界：**
+
+| | `define char` | `define image` |
+|---|---|---|
+| 对话行 | ✅ | ❌ 解析期报错 |
+| 语音相关字段 | ✅ | ❌ 不支持 |
+| `layers` / `states` | ✅ | ✅ |
+| `expressions` | ✅ | ✅ |
+| `triggers` | ✅ | ✅ |
+| `alias=` 多实例 | ✅ | ✅ |
+| `define extends` | ✅ | ✅（只能继承同类型） |
+| 跨类型继承 | ❌ 解析期报错 | ❌ 解析期报错 |
+| GUI 符号表分类 | 角色 | 图片对象 |
+
+`define image` 之间可以 `extends`，不能继承 `define char`，反之亦然。跨类型继承解析期报错。
+
+**静态别名与 `const` 的区别：**
+
+```apy
+define image bg_room = "assets/bg/room.png"   # 进符号表，show bg_room 用裸名字
+const BG_ROOM = "assets/bg/room.png"          # 不进符号表，show $BG_ROOM 需要 $ 前缀
+```
+
+单行别名形式主要价值是路径变更时只改一处，并让资源名进入符号表统一管理。分层形式是 `define image` 的核心用途。
 
 ### 扩展语法
 
@@ -1634,7 +1712,9 @@ expoint after_prologue
 | `input disable` / `input enable` | 脚本区输入控制节点；块语法对应包裹节点，对称写法对应独立节点 |
 | `modal show/hide` | 脚本区模态框节点；`as result` 显示返回值变量名 |
 | `menu as` 返回值 | 脚本区独立"菜单返回值"节点，与跳转型菜单节点分开；`->` 右侧显示返回值表达式字段 |
-| `define extends` 角色继承 | 角色定义积木块显示继承关系；子角色字段列表中继承字段以灰色标注来源 |
+| `define extends` 角色继承 | 角色定义积木块显示继承关系；子角色字段列表中继承字段以灰色标注来源；链式继承超过两层时节点显示黄色警告标记，字段来源标注完整展开路径 |
+| `define image`（静态别名） | 资源管理面板独立区域，与角色列表分开展示；显示文件路径和资源预览 |
+| `define image`（分层） | 图片对象积木块，`layers`/`states`/`expressions`/`triggers` 编辑器与角色定义完全一致；符号表中以"图片对象"类型区分于角色 |
 | `jump/call/return if/unless` 条件短路 | 脚本区带条件标签的跳转箭头节点，视觉权重轻于完整 `if` 块 |
 | `track (interactive)` | 时间轴视图中以特殊标记区分交互轨道与普通轨道；普通轨道内出现对话行时编辑器报错 |
 | `cursor` 指令 | 脚本区光标切换积木块；`default` / `none` 显示关键字标签，路径显示文件名 |
@@ -1714,12 +1794,26 @@ camera move 1.2 (angle=15.0) # zoom 用位置，跳过 duration 改具名，OK
 camera move _ 0.5            # 错误：不支持占位符，改用具名写法
 ```
 
-**`show` 位置约束**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=` 传入，与 duration（数字类型）不产生歧义。
+**`show` 位置约束**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=` 传入，与 duration（数字类型）不产生歧义。duration 必须跟在位置关键字之后——数字直接跟在角色名后面（没有前置位置关键字）时，解析期报错，不静默接受；需要指定 duration 但不改变位置时，使用 `(duration=0.3)` 具名参数。此外，连续两次 `show` 同一角色且位置相同、第二次没有 duration 时，引擎输出警告（可能是漏写），可 ignore。
 
 ```apy
-show eileen left 0.3                 # 关键字位置 + duration
-show eileen (pos=(100, 200))         # 数值坐标，具名参数
-show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
+show eileen left 0.3                 # 合法：关键字位置 + duration
+show eileen (pos=(100, 200))         # 合法：数值坐标，具名参数
+show eileen 0.3 (pos=(100, 200))     # 合法：duration + 数值坐标（duration 不依赖位置关键字，走具名 duration 槽）
+show eileen (duration=0.3)           # 合法：保持当前位置，只指定 duration
+show eileen 0.3                      # AxnParseError：数字直接跟在角色名后，位置关键字缺失
+```
+
+```
+AxnParseError: Unexpected number in 'show' position slot (line 8, scene.apy)
+  Duration requires a position keyword before it, or use named parameter.
+
+  8 | show eileen 0.3
+                  ^^^
+
+  Did you mean:
+    show eileen center 0.3      (appear at center with duration)
+    show eileen (duration=0.3)  (keep current position with duration)
 ```
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
@@ -1808,6 +1902,8 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 **角色定义**：内联在 `.apy` 文件中，不使用外部 JSON。`define` 默认推断类型，`define char` 为显式声明，语义等价但意图更清晰。支持 `dyn define` 实现运行时动态定义。
 
+**`define image`（非角色分层图片对象）**：`define char` 解决角色立绘的分层需求，`define image` 解决非角色可显示对象的分层需求（道具、背景元素、环境特效等）。支持与 `define char` 相同的 `states`/`layers`/`expressions`/`triggers` 字段，但不携带任何角色专属字段（`voice_prefix`、`dialogue_box` 等），对话行指向 `define image` 对象时解析期报错。`define image` 之间可以 `extends`，不能跨类型继承 `define char`，反之亦然，跨类型继承解析期报错。单行别名形式（`define image bg_room = "path"`）让资源名进入符号表，`show bg_room` 可用裸名字；与 `const` 的区别是后者不进符号表，需要 `$` 前缀引用。
+
 **`show` 层级**：默认操作 sprite 层，需要时通过 `(layer=effect)` 等显式指定。层级扩展需求驱动，不过早设计。
 
 **并行与串行执行**：同行逗号分隔的指令并行执行，引擎默认等所有并行动画完成后推进。需要精细控制等待时机时，用 `as` 给动画命名，再用 `wait for` 显式控制。`wait for` 中 `for` 是介词而非子命令，`wait for all` / `wait for any` / `wait for <name>` 三种形式语义链完整。
@@ -1854,7 +1950,7 @@ show eileen 0.3 (pos=(100, 200))     # duration + 数值坐标
 
 **`animation yield` 暂停点**：`yield` 只暂停 animation 自身，调用方 track / label 继续执行。`resume animation <handle>` 从 yield 点继续。`hide` 对象时若有未 resume 的 animation，输出警告，animation 随对象丢弃。
 
-**`animation loop` 块**：`loop`（无条件）执行期间禁止存档，手动存档直接拒绝；`loop until` 执行期间挂起存档，条件满足 loop 结束后自动执行。
+**`animation loop` 块**：`loop`（无条件）执行期间禁止存档，手动存档直接拒绝；`loop until` 执行期间挂起存档，条件满足 loop 结束后自动执行。`animation loop` 不要求声明 `rollback=`（与 `while`/`for` 不同），因为 `animation` 块内不允许对话行，回滚语义无歧义；存档行为由 `loop` / `loop until` 的类型自动决定，已是对循环结构的显式约束。
 
 **`AnimatedSprite` 生命周期钩子**：新增 `on_show` / `on_hide` / `on_pause` / `on_resume` / `on_snapshot` / `on_restore` 六个钩子。`on_snapshot` / `on_restore` 与 `@restorable` 的 `__snapshot__` / `__restore__` 统一接口，两种写法均可，引擎内部统一处理。
 
@@ -1939,7 +2035,7 @@ input disable:
 
 **位置参数连续填充规则**：位置参数必须从第一个开始连续提供，跳过任何一个则之后全部改具名参数。不支持占位符语法（`_`）。规则全局统一，适用于所有指令，用户学一条规则即可推导所有指令行为。
 
-**`show` 位置与坐标扩展**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=(x, y)` 传入。两者类型不同（关键字 vs 数字），解析器无歧义。此约束显式锁定，不允许在位置参数位置传入数值坐标。
+**`show` 位置与坐标扩展**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=(x, y)` 传入。两者类型不同（关键字 vs 数字），解析器无歧义。duration 必须跟在位置关键字之后；数字直接跟在角色名后面（无前置位置关键字）时解析期报错，错误信息给出两种修复建议（补位置关键字 / 改用具名 `duration=`）。连续两次 `show` 同一角色且位置相同、第二次没有 duration 时，引擎输出警告提示可能漏写，可 ignore。
 
 **`pause` / `resume`**：独立动词，不是 `play` / `stop` 的子命令。语义区别：`stop` 停止并丢弃进度，`pause` 保留进度暂停，`resume` 从保留位置恢复。适用于 `music`、`sound`、`video`，子命令语法与 `play` / `stop` 对称。`pause` 接受 `fadeout` 位置参数（画面/音量渐暗），`resume` 接受 `fadein` 位置参数。
 
@@ -1965,7 +2061,7 @@ input disable:
 
 **`menu as` 返回值**：`menu as result` 选完后继续当前执行流，选项 `->` 右侧为返回值表达式而非 label 名。`menu as` 内不允许 `jump`，混用时解析器报错。需要前置逻辑时用展开块 + 显式 `->` 返回。GUI 对应独立的"菜单返回值"节点，与跳转型菜单节点分开，不混用。
 
-**`define extends` 角色继承**：子角色继承父角色所有字段，显式声明的字段覆盖父定义。`layers` 模型下同名动态层内按 key 合并，未声明状态继承父定义。只允许单继承，不支持链式，避免字段来源追踪困难。继承只发生在编译期展开，运行时两个角色是完全独立的显示对象。
+**`define extends` 角色继承**：子角色继承父角色所有字段，显式声明的字段覆盖父定义。`layers` 模型下同名动态层内按 key 合并，未声明状态继承父定义。支持链式继承（A extends B extends C），但引擎启动时输出警告，可 ignore；字段展开顺序为从根到叶，子类覆盖父类。建议保持单层继承以维持可读性——链式超过两层后，字段来源在代码审查时难以追踪，GUI 编辑器对超过两层的链式继承在角色定义节点上显示黄色警告标记，并在字段列表中标注完整展开路径。`define char` 与 `define image` 之间不允许跨类型继承，解析期报错。继承只发生在编译期展开，运行时两个角色是完全独立的显示对象。
 
 **条件跳转短路写法**：`jump`/`call`/`return` 行末可接 `if`/`unless` 条件，条件表达式为完整 Python 表达式。不支持 `call ... as result if ...`（条件不满足时返回值语义不明），退回 `if` 块处理。GUI 对应带条件标签的跳转箭头节点，视觉权重轻于完整 `if` 块，与 `unless` 卫语句设计意图一致。
 
@@ -3393,11 +3489,12 @@ gui button(label, is_danger=False):
 
 #### 第三层：`style`（全局具名样式）
 
-借鉴 Ren'Py `style` 系统的自动推导能力。`style` 与 `mixin` 底层相同，区别在于：
+借鉴 Ren'Py `style` 系统的自动推导能力。`style` 与 `mixin` 的职责严格分离：
 
-- `style` 参与自动推导，`mixin` 不参与
-- 两者都可以手动 `apply`
-- 语义上：`style` 是"这个控件类应该长什么样"，`mixin` 是"把这段样式混入进来"
+- `style` 只用于自动推导，按命名约定自动绑定到对应控件类，**不支持手动 `apply`**
+- `mixin` 只用于手动 `apply`，不参与自动推导
+- 规则一句话：**想自动生效用 `style`，想手动控制用 `mixin`，两者不互换**
+- `style=` 具名参数（调用点覆盖）只接受 `mixin`，不接受 `style`
 
 **自动推导命名规则**：
 
@@ -3537,7 +3634,7 @@ EileenBox extends BaseBox:
 
 **`button` 不预设视觉**：`button` 本身不携带任何默认背景或颜色。样式完全由 `style button` 全局推导或调用点 `style=` 参数决定。不定义 `style button` 时控件自然是素的，无需任何 flag。
 
-**`style=` 只接受 `mixin`**：调用点样式覆盖只接受 `mixin`，不接受 `style`。`style` 是全局推导用的，`mixin` 是手动 apply 用的，职责不混，边界明确。
+**`style=` 只接受 `mixin`**：调用点样式覆盖只接受 `mixin`，不接受 `style`。`style` 只用于自动推导，不支持手动 `apply`；`mixin` 只用于手动 `apply`，不参与自动推导。两者职责严格分离，边界明确，规则一句话可以说清楚。
 
 **`typewriter` 与对话文本共享 `TextRenderer`**：脚本层对话行和 UI 层 `typewriter` 控件底层共享同一套 `TextRenderer` 核心模块，两个入口行为完全一致。富文本标签、语音同步、`nowait` 等特性在两个入口同步生效，不维护两套实现。
 
@@ -3561,7 +3658,7 @@ EileenBox extends BaseBox:
 
 **简写语法**：`style` 块集中声明样式（`when` 可省略，状态名直接作为缩进键）；单行事件处理（`on_click` 只有一个表达式时可内联）；属性内联括号（叶子控件用具名参数内联）；`vstack` / `hstack` 是 `stack vertical` / `stack horizontal` 的别名。完整写法始终有效，简写是语法糖。
 
-**样式系统四层优先级**：`自身声明 > 手动 apply mixin（后 > 前）> 自动推导 style > extends 父类自身声明 > extends 父类 apply > theme token 默认值`。`style` 参与自动推导（按 `控件名`、`控件名_状态`、`控件名_子元素`、`控件名_子元素_状态` 命名约定），`mixin` 不参与自动推导。自动推导只拾取自身名字匹配的 `style`，不沿 `extends` 继承链向上查找。`mixin` 支持参数化（函数签名风格）。冲突时规则唯一，引擎启动时对已知冲突输出警告。
+**样式系统四层优先级**：`自身声明 > 手动 apply mixin（后 > 前）> 自动推导 style > extends 父类自身声明 > extends 父类 apply > theme token 默认值`。`style` 只参与自动推导（按 `控件名`、`控件名_状态`、`控件名_子元素`、`控件名_子元素_状态` 命名约定），不支持手动 `apply`；`mixin` 只用于手动 `apply`，不参与自动推导。自动推导只拾取自身名字匹配的 `style`，不沿 `extends` 继承链向上查找。`mixin` 支持参数化（函数签名风格）。冲突时规则唯一，引擎启动时对已知冲突输出警告。
 
 **`style` 自动推导不沿继承链向上查找**：子控件不自动继承父控件的 `style`（如 `base_button_hovered` 对 `my_button` 不生效），避免"改父类 style 隐式影响所有子类"的耦合问题。需要继承父类 style 时，显式声明 `inherit_styles`：
 
