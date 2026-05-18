@@ -1745,6 +1745,20 @@ expoint after_prologue
 | `expoint name` 调用 | 脚本区独立积木块，标注"可选，未定义时跳过"；已有定义时显示绿色指示，未定义时显示灰色 |
 | 开发者工具 | 编辑器集成调试面板；发布包中完全剥离（灰色标注"release 不包含"） |
 | 动态 `show $sprite` / `jump $target` | 脚本区动态指令节点，变量名字段可编辑，与静态版本视觉区分 |
+| `scene (with=..., all)` / `scene (with=..., layer=[...])` | 场景切换积木块内过渡层级字段；`all` 显示为"全画面"标记，`layer=` 显示层名列表 |
+| `TransitionLibrary.register` | startup 代码节点；编辑器过渡选择器中显示已注册的自定义过渡名，与内置过渡同列 |
+| `draggable` | 控件节点上的拖拽配置面板；`data` / `preview` / `layer` 字段可编辑；`free=true` 标注"自由定位模式" |
+| `droptarget` | 控件节点上的放置目标配置面板；`accept_type` 显示类型字段；`accept` lambda 降级代码节点；`drag_over` 状态在样式编辑器中与其他状态并列 |
+| `moveable` | 控件节点上的拖移配置面板；`handle` / `bounds` / `snap` 字段可编辑；`persist` 显示绑定变量名，`persist_read` / `persist_write` 显示为独立开关 |
+| `<shader=...>` 标签 | 对话积木块内富文本编辑器中高亮显示；内置着色器显示名称+参数字段；自定义着色器标注来源 |
+| `style shader:` | 样式编辑器内着色器字段，支持多个效果堆叠，拖拽排序 |
+| `TextShaderLibrary.register` | startup 代码节点；编辑器着色器选择器中显示已注册的自定义着色器名 |
+| `together` 块 | 脚本区"同时对话"积木块，块内各角色对话行并排显示；`nowait` 在块内标注为警告（无效） |
+| `chorus` 块 | 脚本区合唱积木块；角色名列表可编辑；对话内容字段单行；语音字段标注"各角色独立播放" |
+| `startup_sequence` | `options_window.apy` 专属面板，序列步骤以时间轴形式展示 |
+| `splash`（图片/视频/序列） | 启动序列面板内的 splash 节点；三种形式视觉区分；`skippable` 显示为开关；在 `input disable` 块内时标注"跳过已禁用" |
+| `warning` 块 | 启动序列面板内的警告节点；`once` 显示为开关并标注"已确认后跳过"；内部走完整控件编辑器 |
+| `loading` 块 | 启动序列面板内的加载节点；`tips` 子块显示轮播文字列表；`engine.load_progress` 标注为引擎内置变量 |
 
 ### 静态与动态修饰符
 
@@ -1794,26 +1808,23 @@ camera move 1.2 (angle=15.0) # zoom 用位置，跳过 duration 改具名，OK
 camera move _ 0.5            # 错误：不支持占位符，改用具名写法
 ```
 
-**`show` 位置约束**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=` 传入，与 duration（数字类型）不产生歧义。duration 必须跟在位置关键字之后——数字直接跟在角色名后面（没有前置位置关键字）时，解析期报错，不静默接受；需要指定 duration 但不改变位置时，使用 `(duration=0.3)` 具名参数。此外，连续两次 `show` 同一角色且位置相同、第二次没有 duration 时，引擎输出警告（可能是漏写），可 ignore。
+**`show` 位置约束**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=` 传入，与 duration（数字类型）不产生歧义。duration 必须跟在位置关键字之后——数字直接跟在角色名后面（没有前置位置关键字）时，引擎运行时输出警告并降级处理为 duration，保持当前位置，可 ignore；需要指定 duration 但不改变位置时，推荐使用 `(duration=0.3)` 具名参数。连续两次 `show` 同一角色且位置相同、第二次没有 duration 时，引擎输出警告（可能是漏写），可 ignore。
 
 ```apy
 show eileen left 0.3                 # 合法：关键字位置 + duration
 show eileen (pos=(100, 200))         # 合法：数值坐标，具名参数
 show eileen 0.3 (pos=(100, 200))     # 合法：duration + 数值坐标（duration 不依赖位置关键字，走具名 duration 槽）
 show eileen (duration=0.3)           # 合法：保持当前位置，只指定 duration
-show eileen 0.3                      # AxnParseError：数字直接跟在角色名后，位置关键字缺失
+show eileen 0.3                      # AxnWarning：数字直接跟在角色名后，位置关键字缺失
+                                     # 降级处理：duration=0.3，保持当前位置
 ```
 
 ```
-AxnParseError: Unexpected number in 'show' position slot (line 8, scene.apy)
-  Duration requires a position keyword before it, or use named parameter.
+AxnWarning: [parser] Number directly follows character name in 'show' without position keyword.
+  Treating as duration=0.3, keeping current position.
+  → scene.apy, line 8
 
-  8 | show eileen 0.3
-                  ^^^
-
-  Did you mean:
-    show eileen center 0.3      (appear at center with duration)
-    show eileen (duration=0.3)  (keep current position with duration)
+Hint: Use 'show eileen (duration=0.3)' to make intent explicit.
 ```
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
@@ -1875,6 +1886,14 @@ AxnParseError: Unexpected number in 'show' position slot (line 8, scene.apy)
 | `on after_load` | — | — |
 | `notify` | 消息字符串 | `icon` `duration` `priority` |
 | `notify system` | 消息字符串 | `subtitle` `icon` |
+| `together` | — | — |
+| `chorus` | 角色名序列 | — |
+| `splash` | 路径或 `axn_logo` 或 `video 路径` 或 `sequence 路径` | `duration` `skippable` `fadein` `fadeout` `background` `fps` `audio` `pattern` `layer` |
+| `warning` | — | `skippable` `once` `background` |
+| `loading` | — | — |
+| `draggable` | — | `data` `preview` `layer` `free` `on_drag` `on_release` |
+| `droptarget` | — | `accept_type` `accept` `on_drop` |
+| `moveable` | — | `handle` `bounds` `snap` `persist` `persist_read` `persist_write` |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
 
@@ -2035,7 +2054,7 @@ input disable:
 
 **位置参数连续填充规则**：位置参数必须从第一个开始连续提供，跳过任何一个则之后全部改具名参数。不支持占位符语法（`_`）。规则全局统一，适用于所有指令，用户学一条规则即可推导所有指令行为。
 
-**`show` 位置与坐标扩展**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=(x, y)` 传入。两者类型不同（关键字 vs 数字），解析器无歧义。duration 必须跟在位置关键字之后；数字直接跟在角色名后面（无前置位置关键字）时解析期报错，错误信息给出两种修复建议（补位置关键字 / 改用具名 `duration=`）。连续两次 `show` 同一角色且位置相同、第二次没有 duration 时，引擎输出警告提示可能漏写，可 ignore。
+**`show` 位置与坐标扩展**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=(x, y)` 传入。两者类型不同（关键字 vs 数字），解析器无歧义。duration 必须跟在位置关键字之后；数字直接跟在角色名后面（无前置位置关键字）时，引擎运行时输出警告并降级处理为 duration，保持当前位置，可 ignore。推荐改用具名参数 `(duration=0.3)` 使意图明确。连续两次 `show` 同一角色且位置相同、第二次没有 duration 时，引擎输出警告提示可能漏写，可 ignore。
 
 **`pause` / `resume`**：独立动词，不是 `play` / `stop` 的子命令。语义区别：`stop` 停止并丢弃进度，`pause` 保留进度暂停，`resume` 从保留位置恢复。适用于 `music`、`sound`、`video`，子命令语法与 `play` / `stop` 对称。`pause` 接受 `fadeout` 位置参数（画面/音量渐暗），`resume` 接受 `fadein` 位置参数。
 
@@ -2110,6 +2129,504 @@ input disable:
 **`notify` 升格为核心指令**：从标准库扩展升格为核心脚本指令。`notify` 触发游戏内通知，`notify system` 触发平台级系统通知（游戏最小化时可见）。内置库模板提供默认 UI，开发者可替换。
 
 **兼容性写法容错原则**：混杂写法或语义混乱的情况默认允许，引擎运行到对应节点时抛出报错提示，可 ignore 以继续进程。推荐已有的标准写法，但不阻止开发者使用非标准写法，由此产生的问题由开发者负责。此原则适用于所有非歧义、非引擎严重影响的兼容性问题。
+
+**`show` 裸数字降级行为**：数字直接跟在角色名后面（无前置位置关键字）时，引擎运行时输出警告，降级处理为 duration，保持当前位置，可 ignore。推荐改用 `(duration=0.3)` 具名参数使意图明确。此行为属于兼容性容错，不是设计意图，不推荐依赖。
+
+**`scene` 过渡层级作用域**：`scene` 的 `with` 参数默认只作用于背景层，立绘层独立不参与。`(all)` flag 让整个画面（含立绘）参与过渡，`(layer=[...])` 精确指定参与层。`transition` 独立指令始终作用于整个画面。
+
+**并行过渡叠加规则**：对象级过渡（`show`/`hide` 的 `enter`/`exit`）可以多个同时运行互不干扰；全屏级过渡（`scene` 的 `with`，`transition` 指令）同一时间只允许一个，后触发的覆盖前一个并输出警告。
+
+**自定义过渡注册**：`TransitionLibrary.register(name, cls)` 让自定义过渡进入过渡库，注册后与内置过渡等价，支持裸名字引用和参数化调用。传实例写法保留，适合一次性使用。
+
+**拖放系统**：`draggable` 声明可拖拽控件，携带 `data`、`preview`、`layer` 参数；`droptarget` 声明放置目标，`accept_type` 简单过滤（GUI 可解析），`accept` lambda 复杂过滤（降级代码节点）；`drag_over` 作为新增状态关键字用于悬停视觉反馈。`free=true` 时走自由定位模式，不需要 `droptarget`。预览控件默认渲染在最顶层，可通过 `layer=` 自定义。`moveable` 专为窗口拖移设计，与 `draggable` 独立可共存；`persist` 默认隐式双向绑定，`persist_read` / `persist_write` 显式控制单向行为。
+
+**文本着色器**：`<shader=效果名(参数)>` 标签作为统一入口，支持内联和 `style` 系统集成；`TextShader` 基类提供 `apply_char`（字符级）和 `apply_block`（块级）两个入口；`is_static=True` 时引擎只计算一次结果缓存；`char_index` / `total_chars` 均相对于已显示部分，打字机效果中自然展开；`TextShaderLibrary.register` 注册自定义着色器。
+
+**`together` 块**：多角色同时说话，共享一个等待点，点击打断所有语音；整体作为一个回滚单元；对话修饰符正常修改各自角色持久表情状态；`nowait` 在块内无效并警告；对话框布局策略在 `options_window.apy` 中配置。
+
+**`chorus` 块**：多角色合唱，显示在同一对话框，所有角色语音同时播放各走各自 `voice_prefix`；整体作为一个回滚单元；名字显示格式可配置。
+
+**旁白在非交互轨道**：`@` / `narrator:` 不算对话行，允许出现在 `parallel` 的非交互轨道，不产生输入路由冲突。
+
+**`startup_sequence`**：在 `options_window.apy` 声明，早于 `start` label 执行。`splash` 支持静态图片、视频、图像序列三种形式；`warning` 块平台合规用，`once=true`（默认）确认后写入 `persistent` 不再显示；`loading` 块显示期间后台加载资源；`input disable` 块在 `startup_sequence` 内完全禁用输入含跳过；开发模式 `skip_startup=true` 跳过整个序列；`show_axn_logo=false` 禁用引擎内置 logo。
+
+---
+
+#### 转场扩展（Transition Extension）
+
+**过渡层级作用域**
+
+`scene` 的 `with` 参数默认只作用于背景层，立绘层独立不参与：
+
+```apy
+scene bg_room 0.5 (with=fade)                        # 只有背景层 fade，立绘不动
+scene bg_room 0.5 (with=fade, all)                   # 整个画面（含立绘）一起 fade
+scene bg_room 0.5 (with=fade, layer=[bg, effect])    # 指定层参与过渡
+```
+
+`transition` 独立指令始终作用于整个画面，语义不变。
+
+**并行过渡叠加规则**
+
+分两类处理：
+
+- **对象级过渡**（`show`/`hide` 的 `enter`/`exit`）：作用于单个对象的 surface，多个同时跑互不干扰，正常合成
+- **全屏级过渡**（`scene` 的 `with`，`transition` 指令）：同一时间只允许一个运行，后触发的覆盖前一个，前一个立即中止并输出警告：
+
+```
+AxnWarning: [transition] Full-screen transition 'fade' interrupted by 'wipe'.
+  Only one full-screen transition can run at a time.
+  → scene.apy, line 12
+```
+
+**自定义过渡注册**
+
+自定义过渡通过注册机制进入过渡库，注册后与内置过渡完全等价：
+
+```python
+# startup 块内注册
+startup:
+    python:
+        from axn_plus.apy.transition import TransitionLibrary
+        TransitionLibrary.register("slide_from_top", SlideFromTop)
+        TransitionLibrary.register("glitch_in", GlitchTransition)
+```
+
+注册后支持裸名字引用和参数化调用：
+
+```apy
+show eileen (enter=slide_from_top)           # 裸名字，使用 __init__ 默认参数
+show eileen (enter=slide_from_top(0.3))      # 带参数，等价于 SlideFromTop(0.3)
+scene bg_room (with=glitch_in(speed=2.0))
+```
+
+传实例的写法（`enter=SlideFromTop(0.3)`）依然保留，两种方式并存：注册适合复用，传实例适合一次性使用。未注册的名字在引擎启动时报 `AxnAssetError`。
+
+---
+
+#### 拖放系统（Drag & Drop）
+
+**核心模型：拖拽源 + 放置目标，事件驱动。**
+
+**`draggable`：声明可拖拽控件**
+
+```apy
+gui inventory_item(item):
+    draggable (
+        data    = item,                      # 拖拽携带的数据
+        preview = drag_preview(item),        # 跟随鼠标的预览控件
+        layer   = effect                     # 预览控件渲染层，默认最顶层
+    )
+    image item.icon (size=(48, 48))
+
+# 预览控件定义
+gui drag_preview(item):
+    image item.icon (size=(40, 40), alpha=0.7)
+```
+
+**`droptarget`：声明放置目标**
+
+```apy
+gui equipment_slot(slot_id):
+    droptarget (
+        accept_type = "equipment",           # 简单类型过滤，GUI 可解析
+        on_drop     = dropped_on_slot
+    ):
+        if store["equipment"][slot_id]:
+            image store["equipment"][slot_id].icon
+        else:
+            rect (size=(48, 48), color=#333333, border_radius=4)
+
+# 复杂过滤条件退回 lambda，降级代码节点
+gui any_slot:
+    droptarget (
+        accept  = lambda data: data.type == "equipment" and data.level <= store["max_level"],
+        on_drop = dropped_on_slot
+    ):
+        ...
+```
+
+`on_drop` 处理器接收被拖拽的 `data` 和目标控件参数：
+
+```apy
+on_drop dropped_on_slot(data, slot_id):
+    $ equip(store["equipment"], slot_id, data)
+    emit "equipment_changed"
+```
+
+**`droptarget` 悬停视觉反馈**：复用条件样式系统，新增 `drag_over` 状态关键字：
+
+```apy
+gui equipment_slot(slot_id):
+    droptarget (...):
+        style:
+            drag_over: border (2, #ff8800)    # 有效拖拽悬停时的高亮
+```
+
+不设置时使用默认样式（无视觉变化）。
+
+**自由定位拖拽（拼图类）**
+
+不走 `droptarget`，直接拿坐标：
+
+```apy
+gui puzzle_piece(piece):
+    draggable (
+        data       = piece,
+        free       = true,              # 自由定位，不需要 droptarget
+        on_drag    = piece_dragging,    # 拖拽中每帧触发，携带当前坐标
+        on_release = piece_released     # 释放时触发，携带最终坐标
+    )
+    image piece.image
+```
+
+**`moveable`：窗口拖移**
+
+专为"拖动控件本身改变位置"设计，与 `draggable` 独立，可共存：
+
+```apy
+gui floating_log:
+    moveable                              # 最简写法，整个控件可拖移
+    moveable (handle=title_bar)           # 只有 title_bar 区域可拖动
+    moveable (
+        bounds  = screen,                 # 移动范围限制：screen / parent / none
+        snap    = (8, 8),                 # 吸附网格（可选）
+        persist = store["log_pos"],       # 位置持久化到 store（可选）
+        persist_read  = true,             # 初始化时从 store 读位置（默认 true）
+        persist_write = true              # 销毁时写回 store（默认 true）
+    )
+    panel:
+        hstack as title_bar:
+            text "日志"
+            spacer grow
+            button "×" on_click: hide gui floating_log
+        scroll vertical:
+            slot children
+```
+
+`persist` 默认隐式双向绑定：初始化时读，销毁时写。`persist_read` / `persist_write` 用于显式控制单向行为。`persist` 但 store 里尚无值时，fallback 到声明位置。
+
+`moveable` 与 `draggable` 共存：
+
+```apy
+gui inventory_item(item):
+    moveable                    # 可移动自身位置
+    draggable (data=item)       # 也可拖到 droptarget 触发事件
+```
+
+---
+
+#### 文本着色器（Text Shader）
+
+**设计定位**：在现有标签系统上增加复杂视觉效果（渐变、描边、发光、波浪等），CPU 端 surface 操作。Pygame 后端主推此方案；Qt 后端 GPU shader 作为可选扩展，不在核心设计范围内。
+
+**`<shader>` 标签**
+
+```apy
+eileen: "这是<shader=gradient(#ff8800, #ffffff)>渐变文字</shader>。"
+eileen: "这是<shader=outline(color=#000000, width=2)>描边文字</shader>。"
+eileen: "这是<shader=glow(color=#ff8800, radius=4)>发光文字</shader>。"
+eileen: "这是<shader=wave(amplitude=3, speed=2.0)>波浪文字</shader>。"
+eileen: "这是<shader=shadow(color=#00000088, offset=(2,2))>阴影文字</shader>。"
+
+# 组合多个效果
+eileen: "这是<shader=[outline(#000000, 2), glow(#ff8800, 4)]>组合效果</shader>。"
+```
+
+**style 系统集成**
+
+```apy
+style glitch_text:
+    shader: [
+        gradient(#ff0000, #ffffff)
+        wave(amplitude=2, speed=3.0)
+    ]
+
+style title_text:
+    shader: outline(#000000, width=3)
+    font_size 32
+
+eileen: "重要台词" (style=glitch_text)
+text "游戏标题" (style=title_text)
+```
+
+**内置着色器列表**
+
+| 着色器 | 参数 | `is_static` |
+|--------|------|-------------|
+| `gradient(color1, color2)` | 渐变色 | `true` |
+| `outline(color, width=2)` | 描边 | `true` |
+| `shadow(color, offset=(2,2))` | 阴影 | `true` |
+| `glow(color, radius=4)` | 发光 | `false` |
+| `wave(amplitude=3, speed=2.0)` | 波浪形变 | `false` |
+
+**自定义着色器**
+
+继承 `TextShader`，与 `Transition` 扩展方式保持一致：
+
+```python
+class RainbowShader(TextShader):
+    is_static = False       # 有 time 依赖，不缓存
+    
+    def __init__(self, speed=1.0):
+        self.speed = speed
+
+    def apply_char(self, surface, char_index, total_chars, time):
+        # char_index / total_chars 均相对于已显示部分
+        # 打字机播放中 total_chars 随时间增长，效果自然展开
+        hue = (time * self.speed + char_index * 0.1) % 1.0
+        color = hsv_to_rgb(hue, 1.0, 1.0)
+        return colorize(surface, color)
+
+    def apply_block(self, surface, time):
+        # 块级处理入口，gradient 等需要整行宽度的效果在此实现
+        return surface
+```
+
+`TextShader` 提供两个入口：`apply_char`（字符级）和 `apply_block`（块级），均有默认实现（直接返回 surface），着色器只需覆盖需要的那个。
+
+**缓存机制**：`is_static=True` 时引擎只计算一次，结果缓存到控件销毁；`is_static=False` 时每帧更新。内置静态着色器：`outline`、`shadow`、`gradient`（无动画）。
+
+注册后与内置着色器完全等价：
+
+```apy
+startup:
+    python:
+        TextShaderLibrary.register("rainbow", RainbowShader)
+
+eileen: "彩虹<shader=rainbow(speed=2.0)>文字</shader>出现了。"
+```
+
+---
+
+#### 多角色对话（Multi-character Dialogue）
+
+**`together` 块：多角色同时说话**
+
+```apy
+together:
+    eileen: "我们一起说！"
+    sophia: "我们一起说！"
+
+together:
+    eileen: "我说我的。" (happy)
+    sophia: "我说我的。" (sad)
+    @ "两人同时开口。"          # 旁白也可以参与
+```
+
+`together` 块内所有对话行同时触发，共享同一个等待点，用户点击一次推进所有。各角色语音独立播放，点击时打断所有正在播放的语音。各角色对话修饰符正常修改各自的持久表情状态。
+
+`together` 内出现 `nowait` 时忽略并输出警告：
+
+```
+AxnWarning: [together] 'nowait' has no effect inside a 'together' block.
+  'together' manages its own wait point.
+  → scene.apy, line 8
+```
+
+`together` 整体作为一个回滚单元。
+
+**对话框布局**：多个对话框同时显示，位置策略在 `options_window.apy` 中配置：
+
+```apy
+engine:
+    together:
+        layout = "follow_sprite"    # 对话框跟随各自立绘位置（默认）
+        layout = "split"            # 画面左右分割
+        layout = "stack"            # 垂直堆叠
+```
+
+**交叉快速对话**
+
+使用现有 `nowait` 或 `parallel` 处理，无需新语法：
+
+```apy
+# nowait：说完立刻推进，无重叠
+eileen: "你说什么？" (nowait)
+sophia: "我说——"   (nowait)
+eileen: "什么！"
+
+# parallel：真正的重叠，A还没说完B就开口
+parallel:
+    track dialogue (interactive):
+        eileen: "你说什——"
+    track sophia_line:
+        wait 0.5
+        sophia: "闭嘴！"
+```
+
+**`chorus` 块：合唱**
+
+多个角色说同一句话，显示在同一个对话框：
+
+```apy
+chorus eileen sophia:
+    "我们绝不放弃！"
+
+chorus eileen sophia narrator:
+    "这一刻，所有人都明白了。" (speed=0.8)
+```
+
+对话框显示所有角色的名字，格式在 `options_window.apy` 中配置：
+
+```apy
+engine:
+    chorus:
+        name_format    = "join"     # "Eileen & Sophia"（默认）
+        name_format    = "list"     # "Eileen, Sophia"
+        name_separator = " & "      # join 模式下的分隔符
+```
+
+语音：所有参与角色同时播放各自的语音文件，走各自的 `voice_prefix`：
+
+```apy
+chorus eileen sophia:
+    "我们绝不放弃！" (voice="chorus_001")
+    # eileen: vo/eileen/chorus_001.ogg
+    # sophia: vo/sophia/chorus_001.ogg
+```
+
+`chorus` 整体作为一个回滚单元。
+
+**旁白在非交互轨道**
+
+`@` 和 `narrator:` 不算对话行，允许出现在非交互轨道，无需新语法：
+
+```apy
+parallel:
+    track dialogue (interactive):
+        eileen: "她慢慢地说着。"
+    track narration:
+        @ "窗外的雨还在下。"    # 旁白不需要用户输入，不产生输入路由冲突
+```
+
+---
+
+#### 启动屏幕（Startup Screen）
+
+在 `options_window.apy` 中声明 `startup_sequence` 块，引擎启动时自动执行，早于 `flow.apy` 的 `start` label。
+
+**执行顺序**：
+
+```
+引擎初始化
+  → startup (before) 块
+  → startup 块
+  → startup (after) 块
+  → startup_sequence（splash → warning → loading）
+  → flow.apy 的 start label
+```
+
+**`startup_sequence` 完整示例**：
+
+```apy
+# options_window.apy
+
+startup_sequence:
+    input disable:
+        splash axn_logo (duration=2.0)                    # 不可跳过
+        splash "ui/splash/aniplex.png" (duration=3.0)     # 不可跳过
+
+    splash "ui/splash/studio.png" (duration=2.5, skippable=true)
+
+    warning (skippable=false, once=true):
+        vstack gap=24:
+            image "ui/rating_18.png"
+            translate zh:
+                text "本作品含有成人内容，请确认您已年满18岁。"
+            translate en:
+                text "This title contains adult content. Please confirm you are 18 or older."
+        hstack gap=16:
+            translate zh:
+                button "确认，继续" on_click: Return()
+                button "离开" on_click: engine.quit()
+            translate en:
+                button "Confirm" on_click: Return()
+                button "Leave" on_click: engine.quit()
+
+    loading:
+        background "ui/loading_bg.png"
+        progress_bar bind=engine.load_progress (style=loading_bar)
+        tips (interval=3.0):
+            "提示：按住Ctrl可以跳过对话。"
+            "提示：右键打开历史记录。"
+            "提示：F12截图。"
+```
+
+**`splash` 指令**
+
+支持静态图片、视频、图像序列三种形式：
+
+```apy
+# 静态图片
+splash "ui/splash/logo.png" (
+    duration   = 3.0,
+    skippable  = true,
+    fadein     = 0.5,
+    fadeout    = 0.5,
+    background = #000000
+)
+
+# 引擎内置 logo（保留关键字）
+splash axn_logo (duration=2.0, skippable=true)
+
+# 视频
+splash video "ui/splash/intro.mp4" (
+    skippable  = false,
+    fadein     = 0.3,
+    fadeout    = 0.3,
+    background = #000000
+)
+
+# 图像序列 + 声音
+splash sequence "ui/splash/frames/" (
+    fps        = 24,
+    audio      = "ui/splash/jingle.ogg",
+    skippable  = true,
+    fadein     = 0.2,
+    fadeout    = 0.2
+)
+
+# 非约定命名时显式声明 pattern
+splash sequence "ui/splash/frames/" (
+    pattern = "frame_{:04d}.png",
+    fps     = 24,
+    audio   = "ui/splash/jingle.ogg"
+)
+```
+
+图像序列文件命名约定：目录内按文件名字典序排列（`000.png`、`001.png`……），引擎自动扫描。
+
+`skippable=true` 时点击触发 `fadeout` 后推进，不硬切。图像序列的 `audio` 走独立 `splash_audio` 内部通道，不影响游戏音频状态，跳过时立刻停止。
+
+**`warning` 块**
+
+平台合规用，内容完全自定义，走完整 `gui` 控件语法。`once=true`（默认）时确认后写入 `persistent`，之后启动直接跳过；`once=false` 时每次启动都显示。`Return()` 推进到下一个 `startup_sequence` 步骤。`translate` 在 `warning` 块内走与脚本层相同的语言选择逻辑。
+
+**`loading` 块**
+
+资源加载在后台线程进行，`loading` 块显示期间同步推进。未声明 `loading` 块时，引擎利用最后一个 `splash` 显示期间后台加载，`splash` 在加载完成前不消失。`engine.load_progress` 是引擎内置的 `0.0`-`1.0` 进度变量。
+
+`tips` 是 `loading` 块内的可选子块，按 `interval` 秒数轮播提示文字。
+
+**`input disable` 与 `startup_sequence`**
+
+`input disable` 块可直接用于 `startup_sequence`，块内的 `splash` 完全禁用输入（包括跳过），`skippable` 参数在此语境下无效并输出警告：
+
+```
+AxnWarning: [startup] 'skippable' has no effect inside an 'input disable' block.
+  Input is already disabled.
+  → options_window.apy, line 8
+```
+
+**开发模式跳过**
+
+```apy
+engine:
+    dev:
+        skip_startup = true    # 跳过整个 startup_sequence，含 skippable=false 的步骤
+    show_axn_logo = false      # 商业项目禁用引擎内置 logo
+```
 
 ---
 
