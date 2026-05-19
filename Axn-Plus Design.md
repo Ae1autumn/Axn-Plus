@@ -59,6 +59,8 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 
 **作用域模型**：引擎维护一个全局 `store` dict，贯穿整个游戏生命周期。所有 Python 块的 `exec()` 调用共享同一个 `store` 作为 `globals`，变量天然跨 label、跨 jump 持久化。引擎内置符号（`show`、`jump` 等 API）通过 `__builtins__` 注入为只读层，用户代码可见但不可覆盖。
 
+**`store` 是全局单例，跨文件共享。** 在任意 `.apy` 文件中通过 `$` 或 `python:` 块写入的变量，在所有其他文件中可直接读取，无需 `import`。`store` 没有文件级命名空间，开发者需自行管理变量命名以避免冲突。
+
 ### 解析器模型
 
 **三遍扫描**：解析器分三遍处理所有 `.apy` 文件，均在引擎启动时一次性完成，不在运行时重复。
@@ -1969,9 +1971,57 @@ Hint: Use 'show eileen (duration=0.3)' to make intent explicit.
 
 **`animation yield` 暂停点**：`yield` 只暂停 animation 自身，调用方 track / label 继续执行。`resume animation <handle>` 从 yield 点继续。`hide` 对象时若有未 resume 的 animation，输出警告，animation 随对象丢弃。
 
-**`animation loop` 块**：`loop`（无条件）执行期间禁止存档，手动存档直接拒绝；`loop until` 执行期间挂起存档，条件满足 loop 结束后自动执行。`animation loop` 不要求声明 `rollback=`（与 `while`/`for` 不同），因为 `animation` 块内不允许对话行，回滚语义无歧义；存档行为由 `loop` / `loop until` 的类型自动决定，已是对循环结构的显式约束。
+**`animation loop` 块**：`loop`（无条件）执行期间禁止存档，手动存档直接拒绝；`loop until` 执行期间挂起存档，条件满足 loop 结束后自动执行。`animation loop` 不要求声明 `rollback=`（与 `while`/`for` 不同）——原因是 `animation` 块内不允许对话行，回滚语义无歧义，存档行为由 loop 类型自动决定，无需开发者显式声明。`while`/`for` 要求显式声明 `rollback=` 是因为块内可能含对话行，回滚语义不明，两者的不对称有意为之。
 
-**`AnimatedSprite` 生命周期钩子**：新增 `on_show` / `on_hide` / `on_pause` / `on_resume` / `on_snapshot` / `on_restore` 六个钩子。`on_snapshot` / `on_restore` 与 `@restorable` 的 `__snapshot__` / `__restore__` 统一接口，两种写法均可，引擎内部统一处理。
+无条件 `loop` 在确认安全时（如外部有 `yield` + `cancel` 明确退出点），可通过 `(checkpoint=allow)` 显式解锁存档：
+
+```apy
+animation ambient_loop:
+    loop (checkpoint=allow):    # 开发者声明：此 loop 有明确退出点，允许存档
+        play sound "sfx/wind.ogg"
+        wait 3.0
+        yield "loop_tick"
+```
+
+`(checkpoint=allow)` 不改变 loop 的执行语义，只解除存档拦截。开发者需自行保证存档时 loop 状态可安全重建。
+
+**`@restorable` 与 `@saveable` 的职责边界**：`@saveable` 处理对象作为 `store` 数据时的序列化；`@restorable` 处理对象作为显示对象时的读档重建。两者职责不重叠，**不推荐同时施加在同一个类上**，但不强制禁止。
+
+同时声明两个装饰器时引擎输出警告，可 ignore：
+
+```
+AxnWarning: [save] @restorable and @saveable are both applied to 'LivePortrait'.
+  @saveable handles store data serialization.
+  @restorable handles display object reconstruction.
+  Consider splitting into a data class (@saveable) and a display class (@restorable).
+  If you know what you're doing, ignore this warning.
+  → characters/live_portrait.py, line 8
+```
+
+**组合使用时的行为**：两套接口完全独立执行，互不干扰——`__save__` / `__load__`（或 pickle）走 `@saveable` 路径，`__snapshot__` / `__restore__` 走 `@restorable` 路径。如果同一个字段同时被两套接口引用，引擎不做任何干预，开发者自行保证一致性。
+
+推荐的拆分方式（作为设计参考，不强制）：
+
+```python
+@saveable
+class CharacterData:              # 纯游戏数据，存入 store
+    def __init__(self):
+        self.relationship = 50
+
+@restorable
+class CharacterDisplay(AnimatedSprite):   # 纯显示状态，不进 store
+    def __init__(self, data: CharacterData):
+        self.data = data
+        self.expression = "neutral"
+        self.timer = 0.0
+
+    def __snapshot__(self):
+        return {"expression": self.expression, "timer": self.timer}
+
+    def __restore__(self, snapshot):
+        self.expression = snapshot["expression"]
+        self.timer = snapshot["timer"]
+```
 
 **`keyframe 折叠规则**：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致，解析器无歧义。
 
@@ -1997,7 +2047,9 @@ with eileen (happy, speed=1.0):
 
 **`narrator` 保留关键字**：`@` 和 `narrator:` 是单行旁白的两种等价写法，`with narrator:` 与 `narrate:` 块等价。`narrator` 是引擎保留关键字，不允许用户通过 `define` 覆盖；尝试 `define char narrator` 时引擎在启动时报错。三种旁白写法（`@`、`narrator:`、`narrate:` 块）风格自选，同一项目内保持一致即可。
 
-**`voice` 短路径**：对话修饰符中 `voice="001"` 自动展开为 `voice_prefix + "001" + 扩展名`。扩展名推断规则：若 `define` 中声明了 `voice_ext` 字段则直接使用；未声明时引擎按 `.ogg` → `.mp3` → `.wav` 优先级扫描，找到第一个存在的文件即用，全部找不到时抛出 `AxnVoiceError`。完整路径写法永远有效，短路径是语法糖。引擎构建发布包时完整打包 `voice_prefix` 目录，扫描行为在发布包里与开发期一致。
+**`voice` 短路径**：对话修饰符中 `voice="001"` 自动展开为 `voice_prefix + "001" + 扩展名`。扩展名推断规则：若 `define` 中声明了 `voice_ext` 字段则直接使用；未声明时引擎按 `.ogg` → `.mp3` → `.wav` 优先级扫描，找到第一个存在的文件即用，全部找不到时抛出 `AxnVoiceError`。完整路径写法永远有效，短路径是语法糖。引擎构建发布包时（`axn build`），对所有短路径的推断结果固化为一张查找表（`dict[str, str]`，短路径 → 完整路径），打包进包体。运行时 `asset/loader.py` 优先查表，零 I/O；开发期查表未命中时回退到实时扫描兜底。
+
+DLC / `mount_archive` 场景下，后挂载的归档引入新语音文件时，查找表支持增量合并（主表 + 归档补丁表分层查找），不覆盖主表。
 
 ```apy
 define eileen:
@@ -2005,7 +2057,22 @@ define eileen:
     voice_ext ".ogg"        # 可选；显式指定跳过扫描，性能更好；不填时按优先级自动推断
 ```
 
-**`flag` 声明块**：只允许顶层声明，右值只允许字面量。支持可选类型注解（`name: type = value`），不写则不检查，保持向后兼容。引用未声明变量时输出警告不报错，保持与 `$` 工作流的兼容性。`flag` 声明的变量直接写入 `store`，无命名空间前缀，访问方式与普通变量完全一致。类型注解的作用：存档时做类型验证（不匹配抛 `AxnSaveError`）；GUI 变量面板按类型渲染控件（`bool` → 开关，`int`/`float` → 数字输入框，`str` → 文本输入框，`list`/`dict` → 折叠代码节点）；VSCode 插件可做悬停类型提示和赋值类型检查。
+**`flag` 声明块**：只允许顶层声明，右值只允许字面量。支持可选类型注解（`name: type = value`），不写则不检查，保持向后兼容。引用未声明变量时输出警告不报错，保持与 `$` 工作流的兼容性。`flag` 声明的变量直接写入 `store`，无命名空间前缀，访问方式与普通变量完全一致。
+
+**`flag` 初始化时机**：引擎启动时（早于任何 `startup` 块）统一扫描所有 `flag` 块，建立全局变量注册表，但**不立即写入 `store`**。写入时机：
+
+- **新游戏**：`start` label 执行前，用声明的默认值初始化 `store`
+- **读档**：用存档值恢复 `store`；存档中没有的 `flag`（新版本新增）用声明的默认值补齐；存档中多余的变量（旧版本删除的 `flag`）静默丢弃并输出警告：
+
+```
+AxnWarning: [save] Store variable 'old_flag' exists in save but is not declared in any 'flag' block.
+  It will be discarded. If this is intentional, ignore this warning.
+  If not, check if a 'flag' declaration was accidentally removed.
+```
+
+此机制保证跨版本存档兼容性：新增 `flag` 不破坏旧存档，删除 `flag` 不导致读档失败。
+
+类型注解的作用：存档时做类型验证（不匹配抛 `AxnSaveError`）；GUI 变量面板按类型渲染控件（`bool` → 开关，`int`/`float` → 数字输入框，`str` → 文本输入框，`list`/`dict` → 折叠代码节点）；VSCode 插件可做悬停类型提示和赋值类型检查。
 
 **类型注解验证边界**：`dict` / `list` 类型注解只验证顶层类型（`isinstance` 检查），不验证内部结构。例如 `relationship: dict = {}` 只保证 `relationship` 是一个 `dict`，不保证其 key/value 的类型。需要结构验证时，继承 `Saveable` 并在 `__load__` 里手动校验，不引入额外语法。
 
@@ -2022,7 +2089,9 @@ flag:
 
 **`checkpoint`**：引擎指令层语法，GUI 完整解析为存档点积木块。`thumbnail=current` 表示截取当前帧作为存档缩略图，为引擎保留关键字，不暴露为 Python 值。存档时 call 栈被丢弃，读档后以 checkpoint 下一行作为新的顶层执行起点。`checkpoint` 出现在被 `call` 的子 label 里时引擎给出编译期警告，建议移至顶层 label 入口处。
 
-**`checkpoint` 存档时机**：存档在 `checkpoint` 指令本身执行完毕后、下一行执行前触发。存档记录的是"执行位置"（即 `checkpoint` 之后的下一行），而不是某个状态快照。读档后从 `checkpoint` 的下一行开始重新执行，`checkpoint` 之后的赋值语句会在读档后重新运行，不会丢失。
+**`checkpoint` 存档时机**：存档在 `checkpoint` 指令执行时触发，记录的恢复起点是 `checkpoint` 的**下一行**。读档后直接从该行开始执行，`checkpoint` 指令本身不重新执行，不触发二次存档。
+
+`checkpoint` 之前已发生的副作用（外部 API 调用、不可逆操作等）读档后不会重新执行。需要在读档后重现的副作用，应放在 `checkpoint` 之后——读档后这些代码会正常执行。
 
 **`checkpoint` 与 `call` 栈**：`checkpoint` 存档时 call 栈被丢弃，读档后以 checkpoint 下一行作为新的顶层执行起点，不尝试恢复调用关系。因此强烈建议将 `checkpoint` 放在顶层 label 入口处，不要放在被 `call` 的子 label 里。引擎对后者给出编译期警告：
 
@@ -2051,6 +2120,8 @@ input disable:
     play video "cutscene/intro.mp4"
     wait for video
 ```
+
+**`on key` 与 `parallel` interactive track 的关系**：`on key` 是全局事件钩子，不受 interactive track 的输入独占影响。interactive track"独占用户输入"指的是点击推进对话的输入路由，不涉及全局按键绑定。因此 `on key "escape"` 打开暂停菜单等全局操作在 interactive track 等待期间始终有效，除非 `input disable` 显式介入。
 
 **位置参数连续填充规则**：位置参数必须从第一个开始连续提供，跳过任何一个则之后全部改具名参数。不支持占位符语法（`_`）。规则全局统一，适用于所有指令，用户学一条规则即可推导所有指令行为。
 
@@ -2139,6 +2210,21 @@ input disable:
 **自定义过渡注册**：`TransitionLibrary.register(name, cls)` 让自定义过渡进入过渡库，注册后与内置过渡等价，支持裸名字引用和参数化调用。传实例写法保留，适合一次性使用。
 
 **拖放系统**：`draggable` 声明可拖拽控件，携带 `data`、`preview`、`layer` 参数；`droptarget` 声明放置目标，`accept_type` 简单过滤（GUI 可解析），`accept` lambda 复杂过滤（降级代码节点）；`drag_over` 作为新增状态关键字用于悬停视觉反馈。`free=true` 时走自由定位模式，不需要 `droptarget`。预览控件默认渲染在最顶层，可通过 `layer=` 自定义。`moveable` 专为窗口拖移设计，与 `draggable` 独立可共存；`persist` 默认隐式双向绑定，`persist_read` / `persist_write` 显式控制单向行为。
+
+**`draggable` + `moveable` 共存时的消歧义规则**：
+
+- `moveable (handle=区域)` 时：`handle=` 区域内的拖动触发移动，其余区域触发 `draggable`
+- `moveable`（无 handle）时：整个控件区域优先触发移动，`draggable` 完全不响应——引擎启动时输出警告：
+
+```
+AxnWarning: [ui] 'draggable' and 'moveable' both declared without 'handle'.
+  'moveable' takes priority over the entire widget area.
+  'draggable' will never trigger.
+  Consider adding 'moveable (handle=...)' to define a dedicated drag handle.
+  → ui/inventory.apy, line 24
+```
+
+手势起始时引擎检查起点是否在 `handle=` 区域内，在则走 `moveable`，否则走 `draggable`。规则唯一，可预测。
 
 **文本着色器**：`<shader=效果名(参数)>` 标签作为统一入口，支持内联和 `style` 系统集成；`TextShader` 基类提供 `apply_char`（字符级）和 `apply_block`（块级）两个入口；`is_static=True` 时引擎只计算一次结果缓存；`char_index` / `total_chars` 均相对于已显示部分，打字机效果中自然展开；`TextShaderLibrary.register` 注册自定义着色器。
 
@@ -4304,6 +4390,15 @@ gui my_button(label) extends base_button:
 不写 `inherit_styles` 时，编辑器在样式面板对未匹配的状态 style 输出提示（灰色标注"未定义，如需 hover 效果请定义 style my_button_hovered 或声明 inherit_styles"）。
 
 **具名频道事件**：`emit` 不写 `channel` 时向父容器冒泡；写 `channel` 时广播到所有订阅该频道的 `on_event`，不受控件树结构限制，不冒泡。两种模式不混用，规则无歧义。
+
+**事件名命名空间**：`axn:` 前缀为引擎标准库保留，开发者不应使用。标准库内部事件（如 `axn:gallery_unlocked`、`axn:save_completed`）使用此前缀，避免与项目事件冲突。开发者自定义事件直接用不带前缀的名称。使用 `axn:` 前缀时引擎启动输出警告：
+
+```
+AxnWarning: [ui] Event name 'axn:my_event' uses the reserved 'axn:' prefix.
+  This prefix is reserved for engine standard library events.
+  Rename your event to avoid potential conflicts with future engine updates.
+  → ui/my_panel.apy, line 12
+```
 
 **`theme` token 类型系统**：token 类型由字面量决定（数字 → `int`/`float`，`#rrggbb` → `color`，字符串 → `str`），同类型支持算术运算，类型不匹配时引擎启动报错：
 
