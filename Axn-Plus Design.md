@@ -57,7 +57,7 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 
 `.apy` 解析为 AST，引擎指令（`show`、`jump`、`menu` 等）走引擎自身的 dispatch；Python 块保留原始源码字符串，执行时通过 `compile()` + `exec()` 并手动传入文件名和行号偏移，使 traceback 能正确指回 `.apy` 文件位置。
 
-**作用域模型**：引擎维护一个全局 `store` dict，贯穿整个游戏生命周期。所有 Python 块的 `exec()` 调用共享同一个 `store` 作为 `globals`，变量天然跨 label、跨 jump 持久化。引擎内置符号（`show`、`jump` 等 API）通过 `__builtins__` 注入为只读层，用户代码可见但不可覆盖。
+**作用域模型**：引擎维护一个全局 `store` dict，贯穿整个游戏生命周期。所有 Python 块的 `exec()` 调用共享同一个内部 exec globals dict（`_exec_globals`），变量天然跨 label、跨 jump 持久化。`Store` 作为该 dict 的代理层，对外暴露游戏变量的读写接口；序列化时过滤所有 dunder key（`__builtins__`、`__name__` 等 `exec()` 自动写入的内部符号），保证存档不被污染。引擎内置符号（`show`、`jump` 等 API）通过 `__builtins__` 注入为只读层，用户代码可见但不可覆盖。
 
 **`store` 是全局单例，跨文件共享。** 在任意 `.apy` 文件中通过 `$` 或 `python:` 块写入的变量，在所有其他文件中可直接读取，无需 `import`。`store` 没有文件级命名空间，开发者需自行管理变量命名以避免冲突。
 
@@ -926,7 +926,7 @@ call animation char_enter(eileen, "left") (handle=anim)
 call animation char_enter(eileen)          # 使用默认参数
 ```
 
-参数类型限制：只允许角色名、位置关键字、数值、字符串字面量，不允许传入 Python 表达式——`animation` 块内不允许 Python，参数也不应该是 Python 表达式，否则 GUI 无法解析调用点。需要动态参数时退回 `label` + Python 块处理。
+参数类型限制：只允许角色名、位置关键字、数值、字符串字面量，不允许传入 Python 表达式，也不允许 `$` 前缀的动态变量——`animation` 块内不允许 Python，参数必须在编译期完全确定，保证 GUI 能完整解析调用点。调用点传入 `$` 前缀参数时解析期报错，需要动态参数时退回 `label` + Python 块处理。
 
 **`animation` 条件分支**
 
@@ -1478,6 +1478,18 @@ with store:
 
 **快照的浅拷贝语义**：快照保存的是 `store` 顶层 key 指向的对象引用，而非深拷贝。回滚时，引擎将这些 key 指回快照保存的旧引用——如果旧对象在块执行期间被外部代码（如通过 Python 直接持有引用并原地修改）改动，回滚无法恢复旧对象的内容。在纯 `.apy` 工作流下此场景不会发生。**回滚保证的语义是：`store` 顶层 key 指向执行前的对象，不保证该对象内容的深度一致性。** 需要深度一致性时，在 `python:` 块里手动构造新对象（如 `new_rel = dict(relationship)`），再通过 `with store` 整体替换顶层 key。
 
+**编译期静态分析警告**：parser 第三遍扫描时，检查紧邻 `with store` 块之前的 `python:` 块（或 `$` 行）是否对 store 变量执行了下标赋值（`dict["key"] = ...`）、属性赋值（`obj.attr = ...`）或原地修改方法调用（`list.append(...)`、`dict.update(...)` 等）。检测到时在编译期输出警告：
+
+```
+AxnWarning: [store] In-place mutation of 'relationship' detected before 'with store' block.
+  In-place mutations are not covered by 'with store' rollback.
+  If an exception occurs inside the 'with store' block, 'relationship' cannot be restored.
+  → scene.apy, line 22
+Hint: Use 'python: new_rel = dict(relationship)' then assign via 'with store: relationship = new_rel'.
+```
+
+此检测覆盖最常见的踩坑路径，不做运行时检测（成本不值得，且不可靠）。
+
 **`const` 声明**
 
 ```apy
@@ -1755,8 +1767,8 @@ expoint after_prologue
 | `<shader=...>` 标签 | 对话积木块内富文本编辑器中高亮显示；内置着色器显示名称+参数字段；自定义着色器标注来源 |
 | `style shader:` | 样式编辑器内着色器字段，支持多个效果堆叠，拖拽排序 |
 | `TextShaderLibrary.register` | startup 代码节点；编辑器着色器选择器中显示已注册的自定义着色器名 |
-| `together` 块 | 脚本区"同时对话"积木块，块内各角色对话行并排显示；`nowait` 在块内标注为警告（无效） |
-| `chorus` 块 | 脚本区合唱积木块；角色名列表可编辑；对话内容字段单行；语音字段标注"各角色独立播放" |
+| `together` 块 | 脚本区"同时对话"积木块，块内各角色对话行并排显示；`nowait` 在块内标注为警告（无效）；`line=` 字段显示为按行标签编辑器，`|` 分隔的各段可独立编辑；`inp=` 字段显示绑定变量名 |
+| `chorus` 块 | 脚本区合唱积木块；角色名列表可编辑；对话内容字段单行；语音字段标注"各角色独立播放"；`line=` / `inp=` 字段处理与 `together` 一致 |
 | `startup_sequence` | `options_window.apy` 专属面板，序列步骤以时间轴形式展示 |
 | `splash`（图片/视频/序列） | 启动序列面板内的 splash 节点；三种形式视觉区分；`skippable` 显示为开关；在 `input disable` 块内时标注"跳过已禁用" |
 | `warning` 块 | 启动序列面板内的警告节点；`once` 显示为开关并标注"已确认后跳过"；内部走完整控件编辑器 |
@@ -2157,7 +2169,11 @@ input disable:
 
 **`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 与 interactive track 共存时解析器直接报错——interactive track 等待用户点击期间，`wait=any` 触发推进的时机不可预测，会产生输入状态污染，此组合没有合理的使用场景。需要提前推进时改用 `wait=none` + 手动 `wait for`。`wait=none` 下使用 `wait for <interactive_track>` 时，输入路由规则不变：interactive track 仍然独占用户输入，`wait for` 是纯被动观察者，只轮询 `track.done`，不接管输入；用户点击推进对话 → track 内部前进 → track 完成 → `wait for` 自然满足。此设计消除了对话行与并行执行之间的交互模型歧义。
 
+**`Store` 作为 exec globals 的代理层**：`exec()` 的 globals 使用内部 `_exec_globals` dict，`Store` 作为其代理层对外暴露游戏变量的读写接口。`exec()` 会自动向 globals 写入 `__builtins__` 等 dunder key，`Store` 序列化时过滤所有 dunder key，保证存档不被污染。此设计同时避免了用户通过 `__builtins__["eval"]` 等路径绕过只读层的问题。
+
 **`with store` 真正的原子语义**：只允许顶层 `store` 变量的赋值语句（`x = ...`、`x += ...`），不允许下标访问、属性访问、方法调用或任何流程控制。违反时解析期报错，不静默通过。原子性边界明确：快照和回滚只针对顶层 key，`dict`/`list` 子项的内部修改不在保证范围内——需要修改子项时，先在 `python:` 块里构造好新值，再用 `with store` 整体赋值。由于块内只允许顶层赋值，涉及的 key 在编译期静态确定，快照成本极低，"原子性"是有实现保证的语义，不是注释。快照保存的是对象引用而非深拷贝——回滚保证 `store` 顶层 key 指向执行前的对象，不保证该对象内容的深度一致性；在纯 `.apy` 工作流下此边界不可见，通过 Python 直接持有 `store` 变量引用并原地修改时需开发者自行注意。外部引用检测不做运行时实现（`sys.getrefcount()` 不可靠，`gc.get_referrers()` 有 GC 暂停开销），此边界通过文档说明清楚即可。
+
+**`with store` 前置原地修改的静态分析警告**：parser 第三遍扫描检测紧邻 `with store` 块之前的 `python:` 块或 `$` 行是否对 store 变量执行了下标赋值、属性赋值或原地修改方法调用，检测到时编译期输出警告。不做运行时检测（成本不值得且不可靠），此警告覆盖最常见的踩坑路径。
 
 **`flag` debug 模式类型检查**：有类型注解的变量在 debug 模式下通过 `Store.__setitem__` 钩子即时验证类型，错误信息包含声明位置。release 模式下 `Store` 退化为普通 `dict`，零开销。避免类型错误拖到存档时才暴露。
 
@@ -2167,7 +2183,7 @@ input disable:
 
 **`camera reset` 清除 follow 状态**：`camera reset` 同时清除 follow 状态，恢复静止镜头。reset 后需要继续 follow 须显式重新声明，避免隐式状态残留。
 
-**`animation` 参数化**：`animation` 块支持函数签名风格参数，和 `label` 保持一致。参数类型限制为角色名、位置关键字、数值、字符串字面量，不允许 Python 表达式——保证 GUI 能完整解析调用点。需要动态参数时退回 `label` + Python 块处理。
+**`animation` 参数化**：`animation` 块支持函数签名风格参数，和 `label` 保持一致。参数类型限制为角色名、位置关键字、数值、字符串字面量，不允许 Python 表达式，也不允许 `$` 前缀的动态变量——参数必须在编译期完全确定，保证 GUI 能完整解析调用点。调用点传入 `$` 前缀参数时解析期报错。需要动态参数时退回 `label` + Python 块处理。
 
 **`show` 永不阻塞执行流**：`show` 指令（含 `transform` 参数）之后立即推进到下一行，transform 在后台运行。需要等待时显式使用 `as` + `wait for`。`as` 在单行 `show` 和并行写法上均有效。
 
@@ -2228,9 +2244,11 @@ AxnWarning: [ui] 'draggable' and 'moveable' both declared without 'handle'.
 
 **文本着色器**：`<shader=效果名(参数)>` 标签作为统一入口，支持内联和 `style` 系统集成；`TextShader` 基类提供 `apply_char`（字符级）和 `apply_block`（块级）两个入口；`is_static=True` 时引擎只计算一次结果缓存；`char_index` / `total_chars` 均相对于已显示部分，打字机效果中自然展开；`TextShaderLibrary.register` 注册自定义着色器。
 
-**`together` 块**：多角色同时说话，共享一个等待点，点击打断所有语音；整体作为一个回滚单元；对话修饰符正常修改各自角色持久表情状态；`nowait` 在块内无效并警告；对话框布局策略在 `options_window.apy` 中配置。
+**`together` 块**：多角色同时说话，共享一个等待点，点击打断所有语音；整体作为一个回滚单元；对话修饰符正常修改各自角色持久表情状态；`nowait` 在块内无效并警告；对话框布局策略在 `options_window.apy` 中配置。支持 `line=` 和 `inp=` 块级参数（见下）。
 
-**`chorus` 块**：多角色合唱，显示在同一对话框，所有角色语音同时播放各走各自 `voice_prefix`；整体作为一个回滚单元；名字显示格式可配置。
+**`chorus` 块**：多角色合唱，显示在同一对话框，所有角色语音同时播放各走各自 `voice_prefix`；整体作为一个回滚单元；名字显示格式可配置。支持 `line=` 和 `inp=` 块级参数（见下）。
+
+**`together` / `chorus` 的 `line=` 和 `inp=` 块级参数**：两个语法糖，适用于 `together` 和 `chorus` 块。`line=` 用 `|` 分隔，按顺序对应块内各行施加文本标签效果，单值无 `|` 时应用整块，多出的段静默忽略；同一段内逗号叠加多个标签。`inp=` 接受 `store` 变量或 expoint 返回值，必须是 `dict`，key 为修饰符参数名，统一应用到块内所有行；行内显式声明的同名参数优先级更高。两者均为纯展开语法糖，不引入新渲染逻辑，可同时使用互不干扰。
 
 **旁白在非交互轨道**：`@` / `narrator:` 不算对话行，允许出现在 `parallel` 的非交互轨道，不产生输入路由冲突。
 
@@ -2501,6 +2519,58 @@ together:
 ```
 
 `together` 块内所有对话行同时触发，共享同一个等待点，用户点击一次推进所有。各角色语音独立播放，点击时打断所有正在播放的语音。各角色对话修饰符正常修改各自的持久表情状态。
+
+**`line=` 语法糖**：`together` 和 `chorus` 块支持 `line=` 块级参数，用 `|` 分隔，按顺序对应块内各行施加文本标签效果。单个值（无 `|`）时应用到整块所有行；多个值时按行对应，多出来的段静默忽略，不足的行无效果。同一段内可用逗号叠加多个标签：
+
+```apy
+together (line="<nw>|<w>"):
+    eileen: "第一句。"    # 应用 <nw>，说完立即推进不等点击
+    sophia: "第二句。"    # 应用 <w>，中途暂停等点击后继续
+
+together (line="<fast>"):
+    eileen: "整块都快速显示。"
+    sophia: "整块都快速显示。"
+
+together (line="<nw>,<fast>|<w>"):
+    eileen: "第一句同时应用 nw 和 fast。"
+    sophia: "第二句应用 w。"
+```
+
+`line=` 是纯语法糖，展开后等价于在每行对话文本头部插入对应标签，不引入新的渲染逻辑。
+
+**`inp=` 注入参数**：`together` 和 `chorus` 块支持 `inp=` 块级参数，接受 `store` 变量或 expoint 返回值，必须是 `dict`，key 为修饰符参数名。`dict` 内容作为额外修饰符统一应用到块内所有行，等价于每行都加了对应的具名参数：
+
+```apy
+$ shared_mods = {"speed": store["text_speed"], "voice_delay": 0.1}
+
+together (inp=shared_mods):
+    eileen: "你好。"    # 等价于 (speed=store["text_speed"], voice_delay=0.1)
+    sophia: "再见。"    # 同上
+
+# 配合 expoint 使用
+expoint dialogue_modifiers:
+    -> {"speed": 0.8, "face": "serious"}
+
+together (inp=dialogue_modifiers):
+    eileen: "听着。"
+    sophia: "我知道了。"
+```
+
+`inp=` 的优先级低于行内修饰符——行内显式声明的参数覆盖 `inp=` 提供的同名参数：
+
+```apy
+together (inp={"speed": 0.5}):
+    eileen: "慢速。"              # speed=0.5
+    sophia: "正常速度。" (speed=1.0)  # 行内覆盖，speed=1.0
+```
+
+`line=` 和 `inp=` 可以同时使用，互不干扰：
+
+```apy
+together (line="<nw>|<w>", inp={"speed": 0.7}):
+    eileen: "第一句。"
+    sophia: "第二句。"
+```
 
 `together` 内出现 `nowait` 时忽略并输出警告：
 
@@ -3329,6 +3399,7 @@ screen 内部通过 `Return()` 传递返回值并触发关闭：
 screen confirm_dialog:
     button "确认" on_click: Return("confirm")
     button "取消" on_click: Return("cancel")
+    button "关闭" on_click: Return()    # 无值退出，result 为 None
 ```
 
 ```apy
@@ -3336,6 +3407,18 @@ call screen confirm_dialog as result
 if result == "confirm":
     jump delete_save
 ```
+
+**`Return()` 与 `Action()`**：`Return()` 是跨层边界的信号，用于从控件事件（`on_click` 等）中退出当前 screen 并向调用方传值，是 `call screen` 和 `modal show` 的唯一传值机制。引擎不引入 `Action()` 包装器——Ren'Py 需要它是因为 screen 语言与 Python 割裂，Axn-Plus 的 `gui` 块内可以直接写 `on_click: $ do_something()`，Python 就是 Python，不需要桥接层。
+
+**三种 `as` 接返回值机制**：`.apy` 里有三处使用 `as` 接返回值，传值机制各不相同，注意不要混淆：
+
+| 场景 | 写法 | 传值机制 |
+|------|------|---------|
+| `call label()` | `call morning_scene() as result` | label 内用 `return expr` 关键字传值 |
+| `call screen` / `modal show` | `call screen confirm_dialog as result` | screen 内用 `Return(expr)` 函数传值 |
+| `menu as` | `menu as answer:` | 选项内用 `->` 右侧表达式传值 |
+
+三者的执行上下文本来就不同，不强行统一。在 label 内写 `Return("x")` 或在 menu 选项内写 `return expr` 均无效，解析期报错。
 
 **`call screen` 与 `modal show` 的区别**：
 
@@ -4346,6 +4429,16 @@ EileenBox extends BaseBox:
 ---
 
 ### 关键设计决策（UI 系统）
+
+**`Return()` 保留，`Action()` 不引入**：`Return()` 是跨执行层的信号，是 `call screen` 和 `modal show` 的唯一传值机制，必须存在。引擎不引入 `Action()` 包装器——Ren'Py 需要它是因为其 screen 语言与 Python 割裂，Axn-Plus 的 `gui` 块内可以直接写 `on_click: $ do_something()`，不需要桥接层。`Return()` 无参数调用时 result 为 `None`。
+
+**三种 `as` 接返回值的传值机制不同**：`.apy` 里有三处 `as` 接返回值，传值方式各不相同，不强行统一。在错误的上下文使用错误的传值方式（如在 label 内写 `Return()`，或在 screen 内写 `return expr`）解析期报错，不静默失败：
+
+| 场景 | 写法 | 传值机制 |
+|------|------|---------|
+| `call label()` | `call morning_scene() as result` | label 内 `return expr` 关键字 |
+| `call screen` / `modal show` | `call screen confirm_dialog as result` | screen 内 `Return(expr)` 函数 |
+| `menu as` | `menu as answer:` | 选项内 `-> expr` 表达式 |
 
 **内置控件不分 `textbutton` / `imagebutton`**：内容类型不混入控件类型。`button` 只负责交互语义，内容通过第一个位置参数（字符串 `label`）或 `slot children` 填充。`label` 只接受字符串字面量，图片必须走 `slot children`，规则唯一无歧义。引擎标准库提供 `text_button` / `image_button` 作为便利封装，但它们是复合控件，不是独立控件类型。
 
@@ -5440,7 +5533,7 @@ class Instruction:
     filename: str                # 源码文件名
 ```
 
-**`CompiledLabel.name` 是必填字段**：热重载时通过名字匹配正在执行的 CallFrame，找到后替换引用并重置 PC。匿名 parallel track 的命名规则为 `__parallel_{parent_label}_{track_index}__`，有命名的 track 用命名作为后缀，保证名字全局唯一。
+**`CompiledLabel.name` 是必填字段**：热重载时通过名字匹配正在执行的 CallFrame，找到后替换引用并重置 PC。匿名 parallel track 的命名规则为 `__parallel_{parent_label}_L{line}_{track_index}__`（含源码行号确保同一 label 内多个 parallel 块不冲突），有命名的 track 用命名作为后缀，保证名字全局唯一。
 
 **`CompiledProject.label_index` 设计为可变 dict**：热重载就是在运行时替换这个索引里的 `CompiledLabel` 对象，不能是 frozen 结构。
 
@@ -5481,7 +5574,7 @@ class Instruction:
 
 **Python 块编译为 code object**：`compile()` 在编译阶段执行，运行时只做 `exec()`。语法错误在编译阶段暴露，文件名和行号偏移传入 `compile()`，保证 traceback 正确指向 `.apy` 源文件。
 
-**parallel 块编译为多个独立 CompiledLabel**：每个 track 生成一个匿名 `CompiledLabel`，命名规则为 `__parallel_{parent_label}_{track_index}__`，有命名的 track 用命名作为后缀。`PARALLEL_BEGIN` 指令的 operand 存这些匿名 label 名的列表，交给 Scheduler 并发管理。
+**parallel 块编译为多个独立 CompiledLabel**：每个 track 生成一个匿名 `CompiledLabel`，命名规则为 `__parallel_{parent_label}_L{line}_{track_index}__`（`line` 为 `parallel` 块的源码行号，保证同一 label 内多个 parallel 块不冲突），有命名的 track 用命名作为后缀。`PARALLEL_BEGIN` 指令的 operand 存这些匿名 label 名的列表，交给 Scheduler 并发管理。
 
 **release 模式差异**：`assert` 节点不生成指令；Python `compile()` 使用 `optimize=2`；`AxnTypeError` 类型检查指令不生成。
 
@@ -5527,7 +5620,7 @@ class Instruction:
 
 #### 关键设计决策（VM）
 
-**Python 块执行环境**：store 作为 `globals`，frame.locals 作为 `locals`。变量写入 store，跨 label、跨 jump 天然持久化。引擎内置符号通过 `__builtins__` 注入为只读层，用户代码可见但不可覆盖。
+**Python 块执行环境**：`_exec_globals`（内部 dict，`Store` 的代理目标）作为 `globals`，frame.locals 作为 `locals`。变量写入 `_exec_globals` 后通过 `Store` 代理层对外可见，跨 label、跨 jump 天然持久化。引擎内置符号通过 `__builtins__` 注入为只读层，用户代码可见但不可覆盖。序列化时 `Store` 过滤所有 dunder key，`exec()` 自动写入的 `__builtins__`、`__name__` 等内部符号不进入存档。
 
 **transform 归属对象不归属 track**：track 结束不停止其内 `show` 触发的 transform，`hide` 对象时才停止所有附属 transform。此规则在 parallel 场景下与单轨道场景完全一致。
 
