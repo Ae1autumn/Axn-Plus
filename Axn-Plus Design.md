@@ -7724,6 +7724,468 @@ engine:
 
 ---
 
+## 执行流控制补充
+
+### `unwind`（展开调用栈）
+
+`unwind` 清空当前整个 call 栈，回到最顶层执行流继续，等价于"从任意嵌套深度强制返回到起点"。
+
+```apy
+unwind                        # 清空 call 栈，回到顶层继续执行
+unwind to morning_scene       # 展开到指定 label（必须在当前栈上，否则运行时报错）
+```
+
+与 `return` 的区别：`return` 只退出当前 label，回到直接调用方；`unwind` 展开整个栈。
+
+**不使用 `return exit` 命名**：视觉上容易误读为"返回并退出游戏"，与 `exit` 指令产生歧义。
+
+### `exit`（退出游戏）
+
+```apy
+exit                          # 立即退出
+exit (confirm=true)           # 弹出确认框，用户确认后退出
+exit (save=autosave)          # 退出前触发自动存档
+```
+
+`exit` 不支持返回值语义。需要跨会话传递数据时，使用 `persistent` 或存档机制：
+
+```apy
+$ persistent["last_choice"] = "agreed"
+exit (save=autosave)
+```
+
+`exit (save=...)` 接受存档槽名称，退出前自动调用 `engine.save(slot=...)`，不产生回溯点，只做数据持久化。
+
+### `expoint` 调用点返回行为
+
+`expoint name` 调用时：
+
+- 有定义：执行定义块，遇到末尾或 `return` 后回到调用点的下一行继续，与 `call` 语义完全一致
+- 无定义：静默跳过，继续执行下一行
+
+定义块内禁止 `jump`，允许 `call`、`return`。
+
+### 程序化存档 / 读档（Python API）
+
+`Save()` / `Load()` 不作为独立 `.apy` 指令存在，这是 Ren'Py 因 screen 语言与 Python 割裂产生的历史遗留设计。
+
+在 `gui` / `screen` 块内直接调用 Python API：
+
+```apy
+button "存档" on_click: engine.save(slot=store["selected_slot"])
+button "读档" on_click: engine.load(slot=store["selected_slot"])
+```
+
+---
+
+## 项目结构补充
+
+### 入口 Label
+
+引擎只识别 `start` 作为唯一合法入口 label：
+
+| 情况 | 行为 |
+|------|------|
+| `start` 存在 | 正常启动 |
+| `start` 不存在 | 启动时报 `AxnCompileError`，提示需要定义 `start` label |
+
+不支持 `main` 或其他命名作为入口。`main` 在 Python 生态有特殊含义（`if __name__ == "__main__"`），用作 label 名会造成认知干扰，不做兼容。
+
+### `project.json`
+
+项目根目录下的 `project.json` 负责项目元数据和构建配置，与 `options_window.apy` 职责严格分离：
+
+| 文件 | 内容 | 读取时机 |
+|------|------|---------|
+| `project.json` | 项目元数据、平台配置、构建策略 | `axn build` 时 |
+| `options_window.apy` | 引擎运行时行为、UI 模板、偏好默认值 | 游戏启动时 |
+
+`axn init` 创建项目时自动生成，启动器 GUI/TUI 直接编辑此文件，无需手动修改 JSON。
+
+```json
+{
+    "name": "My Visual Novel",
+    "version": "1.0.0",
+    "author": "Studio Name",
+    "backend": "pygame",
+    "resolution": [1280, 720],
+    "theme": "default",
+
+    "build": {
+        "runtime": "auto",
+        "assets": "bundle",
+        "exclude_packages": [],
+        "include_packages": []
+    },
+
+    "android": {
+        "package": "com.studio.gamename",
+        "version_code": 1,
+        "version_name": "1.0.0",
+        "min_sdk": 21,
+        "target_sdk": 34,
+        "keystore": "release.jks",
+        "keystore_alias": "mykey"
+    },
+
+    "macos": {
+        "bundle_id": "com.studio.gamename",
+        "sign_identity": ""
+    },
+
+    "windows": {
+        "output": "installer"
+    },
+
+    "linux": {
+        "output": "appimage"
+    }
+}
+```
+
+`options_window.apy` 中之前提到的构建相关配置（`engine.extensions`、平台参数等）统一迁移到 `project.json`，`options_window.apy` 只保留运行时有效的配置。
+
+---
+
+## 构建系统
+
+### 构建维度
+
+构建参数分两个独立维度，可自由组合：
+
+**`--runtime`：Python 运行时裁剪策略**
+
+| 值 | 行为 |
+|----|------|
+| `auto`（默认） | 静态扫描依赖，按需打包 |
+| `full` | 完整 CPython + 完整标准库，不裁剪 |
+| `minimal` | 只打引擎核心所需，极致压缩 |
+
+**`--assets`：资源打包策略**
+
+| 值 | 行为 |
+|----|------|
+| `bundle`（默认） | 资源打进包体 |
+| `remote` | 资源从服务器拉取（Downloader 模式） |
+| `split` | 核心资源打包，大文件远程拉取 |
+
+组合示例：
+
+```
+axn build --platform=android --runtime=minimal --assets=remote
+# → 最小启动包，资源全部远程拉取，目标包体 < 10MB
+```
+
+### 依赖裁剪机制
+
+分三类处理：
+
+**纯 Python 包**（httpx、pyyaml 等）：静态扫描所有 `.apy` 文件的 `python:` 块和 `$` 行，提取 `import` 语句。未出现的包不打入包体。
+
+**有 C 扩展的 Python 包**（numpy、pillow 等）：同样按 import 扫描决定是否打入，但无法做子模块裁剪，整个 `.so` 都要带上。pillow 例外，按实际用到的图片格式只编译对应 codec。
+
+**系统级 C 库**（FFmpeg、SDL2、Qt）：必须在编译期决定，按下文各节说明裁剪。
+
+静态扫描无法覆盖动态 import（`importlib`、字符串拼接模块名等），开发者通过 `project.json` 补充声明：
+
+```json
+"build": {
+    "include_packages": ["my_dynamic_import_lib"],
+    "exclude_packages": ["tkinter"]
+}
+```
+
+**标准库裁剪**：`--runtime=auto` 下默认排除以下模块（视觉小说项目不需要）：`tkinter`、`turtle`、`unittest`、`pdb`、`idlelib`、`ensurepip`、`lib2to3`。
+
+### FFmpeg 裁剪
+
+`axn build` 时扫描项目内所有资源文件扩展名 + `.apy` 脚本里静态可知的 `play`/`play video`/`scene` 路径引用，得到实际用到的格式集合，据此决定编译哪些 codec。
+
+支持的格式与对应 FFmpeg 组件：
+
+**图片**
+
+| 格式 | 说明 |
+|------|------|
+| png | 内置，无额外依赖 |
+| jpg / jpeg | libjpeg |
+| webp | libwebp |
+| svg | librsvg（仅静态 SVG，不支持动画） |
+
+**视频**
+
+| 格式 | 解码器 |
+|------|--------|
+| mp4 / mov | libx264 + AAC |
+| webm | libvpx + libvorbis / libopus |
+| avi | 按实际编码决定 |
+
+**音频**
+
+| 格式 | 解码器 |
+|------|--------|
+| mp3 | libmp3lame |
+| wav | 内置 |
+| flac | 内置 |
+| m4a | AAC（与 mp4 共用） |
+| ogg | libvorbis |
+
+`--runtime=auto` 下默认只打 mp4 + ogg + wav 的解码器（覆盖视觉小说 95% 的场景），其他格式在扫描结果中出现时自动追加。
+
+### Qt 模块裁剪
+
+扫描 `.apy` 文件中 `qt:` 块的 import 语句，加上引擎本身用到的 Qt 模块，合并决定打哪些：
+
+```
+axn build --qt-modules=auto          # 扫描决定（默认）
+axn build --qt-modules=core,gui,widgets   # 手动指定
+```
+
+默认排除：`QtWebEngine`、`Qt3D`、`QtDataVisualization`。`QtMultimedia` 由 FFmpeg 替代，默认不打。
+
+### 平台构建
+
+**Windows**
+
+```
+axn build --platform=windows --output=installer   # NSIS 安装包（默认）
+axn build --platform=windows --output=portable    # 可执行目录，无需安装
+```
+
+不推荐 `--output=exe`（单文件）：启动时需解压到临时目录，视觉小说启动体验差。
+
+**macOS**
+
+```
+axn build --platform=macos --output=dmg     # DMG 磁盘镜像（默认）
+axn build --platform=macos --output=app     # 只生成 .app bundle
+```
+
+需要代码签名和公证（Notarization），macOS 14+ 未签名应用会被拦截。通过 `project.json` 的 `macos.sign_identity` 字段配置签名证书，留空时生成未签名版本并输出警告。
+
+**Linux**
+
+```
+axn build --platform=linux --output=appimage   # 推荐，依赖自包含，任意发行版可运行
+axn build --platform=linux --output=deb        # Debian/Ubuntu 包
+axn build --platform=linux --output=tar        # 纯压缩包
+```
+
+**Android**
+
+```
+axn build --platform=android --output=apk    # 直接安装包
+axn build --platform=android --output=aab    # Google Play 要求格式
+```
+
+构建前自动检测依赖环境，不存在时报错给出官网链接，不自动下载：
+
+```
+[✓] JDK 17        /usr/lib/jvm/java-17
+[✗] Android NDK   未找到
+    请在 Android Studio 中安装 NDK，或前往：
+    https://developer.android.com/ndk/downloads
+    安装后设置 ANDROID_NDK_HOME 环境变量
+[✗] bundletool    未找到
+    请前往：https://github.com/google/bundletool/releases
+    下载后设置 BUNDLETOOL_PATH 环境变量
+[!] 签名密钥      未配置，将使用调试密钥（不适合发布）
+```
+
+引擎不自带、不捆绑、不自动下载 JDK / NDK / bundletool，维护成本过高且开发者机器通常已有。
+
+密钥库不存在时自动生成调试密钥，正式发布前替换为 `project.json` 中配置的 `keystore`。
+
+**Android 资源路径**：构建时 `main/` 目录整体打入 APK 的 `assets/`，路径映射不变，`engine.open_file()` 内部处理平台差异，开发者无感知。
+
+### 预期包体大小参考
+
+| 配置 | 预期大小 |
+|------|---------|
+| Pygame + `--runtime=auto` | 20–30MB |
+| Qt + `--runtime=auto` | 40–55MB |
+| Pygame + `--runtime=minimal` + `--assets=remote` | < 10MB |
+
+Ren'Py 默认包体约 60MB（未裁剪 CPython + 完整标准库 + 未裁剪 pygame）。Axn-Plus 从设计阶段将裁剪纳入构建流程，不是事后压缩。
+
+---
+
+## 文本编码
+
+`.apy` 源文件默认编码为 UTF-8（无 BOM）。可在 `project.json` 中调整：
+
+```json
+"source_encoding": "utf-8"
+```
+
+支持的编码：
+
+| 值 | 说明 |
+|----|------|
+| `utf-8`（默认） | 推荐，覆盖所有语言 |
+| `gb18030` | 简体中文遗留项目 |
+| `shift-jis` | 日语遗留项目 |
+
+不单独列 ASCII——ASCII 是 UTF-8 的子集，UTF-8 模式下天然兼容。
+
+`source_encoding` 只作用于 `.apy` 源文件本身的解码，不影响资源文件路径。资源文件路径统一要求 UTF-8，避免 Windows ANSI 路径问题。
+
+引擎内部处理统一转为 UTF-8 字符串，编码信息不向下传递。
+
+---
+
+## 资源系统补充
+
+### 扩展名省略
+
+`.apy` 脚本中引用资源时可省略扩展名：
+
+```apy
+show home          # 引擎自动查找 home.png / home.jpg / home.webp 等
+play music rain    # 引擎自动查找 rain.ogg / rain.mp3 / rain.wav 等
+```
+
+**实现机制**：引擎启动时扫描 `main/` 目录，建立路径索引 `name_without_ext → full_path`。同名不同扩展名时启动报错，要求开发者显式指定扩展名消歧义。
+
+**打包后**：`axn build` 将索引固化为查找表打进包体，运行时零 I/O 查表，与 voice 短路径机制复用同一套。
+
+**`$` 动态路径**：无法在编译期处理，运行时查内存索引，成本可接受。
+
+### 资源缺失策略
+
+**开发期**：启动时输出警告，可忽略，不阻止运行。
+
+**发布包**：通过 `project.json` 配置：
+
+```json
+"build": {
+    "release_asset_missing": "placeholder"
+}
+```
+
+| 值 | 行为 |
+|----|------|
+| `placeholder`（默认） | 图片显示灰色占位，音频静音 |
+| `silent` | 完全静默，不渲染 |
+| `crash` | 写 crash.log + 显示错误界面 |
+
+不向玩家显示原始文件路径。
+
+### Android 资源访问
+
+Android 构建后资源在 APK 的 `assets/` 目录内，不能用普通文件系统路径访问。`engine.open_file()` 内部处理平台差异：
+
+```python
+def open_file(path: str):
+    if PLATFORM == "android":
+        return _android_asset_open(path)
+    elif _current_archive:
+        return _archive_open(path)
+    else:
+        return open(_resolve_path(path), "rb")
+```
+
+开发者始终使用 `engine.open_file()`，不直接调用 `open()`——后者在打包后资源被归档时会找不到文件。
+
+---
+
+## 启动器（Axn-Plus Launcher）
+
+Axn-Plus 提供三种交互层，共享同一套业务逻辑，只换前端：
+
+| 启动方式 | 说明 |
+|---------|------|
+| `axn-plus` | 直接启动 GUI（编译后的 Qt 产物） |
+| `axn-plus --tui` | 启动 TUI（基于 `textual`，不依赖 Qt） |
+| `axn-plus <command>` | 直接执行 CLI 命令，不启动交互界面 |
+
+GUI 是编译产物，不是运行时检测后的降级，三种方式是独立的启动入口。
+
+### 创建项目流程
+
+```
+Step 1: 项目名称
+        输入项目名称
+        → 自动推导目录名（去除特殊字符）
+        → 可手动修改目录名
+
+Step 2: 后端选择
+        ○ Pygame（推荐，轻量，适合大多数视觉小说）
+        ○ Qt（复杂 UI 需求，包体较大）
+
+Step 3: 分辨率
+        ○ 1280×720（默认）
+        ○ 1920×1080
+        ○ 自定义
+
+Step 4: 主题
+        ○ 默认（推荐）
+        ○ [更多主题即将推出]  （占位，灰色不可选）
+
+Step 5: 确认创建
+        → 显示项目路径预览
+        → 创建完成，可选"立即在编辑器中打开"
+```
+
+Android 包名、签名密钥等平台配置**不在创建阶段询问**，在构建时或 `project.json` 中配置。创建阶段询问包名时机不对（用户还没写一行代码）。
+
+**不提示"正在编写一个简短的程序"**：这是 Ren'Py 的历史遗留，早期硬件上动态生成胶水代码需要时间。Axn-Plus 的三遍扫描在现代硬件上极快，不需要提示。大型项目扫描超过 1 秒时显示进度条，不显示文字提示。
+
+### Android 构建环境检测
+
+构建前自动检测，缺失时报错给出官网链接，不自动下载，不捆绑工具链。GUI/TUI 中以状态图标列表展示，链接可点击。
+
+---
+
+## 开发者工具补充
+
+### `axn lint`
+
+静态分析工具，集中输出 warning 并支持配置严格度：
+
+```
+axn lint                          # 全项目扫描
+axn lint scripts/scene.apy        # 单文件
+axn lint --strict                 # warning 升级为错误
+```
+
+检查项（不限于）：未使用的 label、未定义的跳转目标、未覆盖的 menu 分支、store 变量未在 `flag` 块声明、使用废弃写法（`as` 句柄、`compose=sequence` 等）。
+
+### `axn test --from-state`
+
+从指定 store 状态启动测试，不需要从头点击到目标场景：
+
+```
+axn test --from-state tests/states/ch2_angry.json --label chapter2_morning
+```
+
+`ch2_angry.json` 是 store 快照（可从开发模式变量浏览器导出），引擎注入此状态后从指定 label 开始执行。
+
+### 引擎内嵌代码编辑器
+
+**不在引擎层实现**。热重载已覆盖主要需求（改外部文件，自动重载）。嵌入式编辑器维护成本高，推迟到 Axn-Editor 集成阶段。
+
+### 开发者工具完整列表
+
+| 工具 | 交付形式 | 说明 |
+|------|---------|------|
+| 控制台 | 开发模式内置，Shift+\` | Python 表达式执行，变量浏览器 |
+| 交互式编导器 | 开发模式内置，Shift+D | 立绘/表情/镜头实时调整，生成代码 |
+| label 跳转（传送门） | 控制台内 | `vm.jump_to(label)` |
+| 自动重载 | 开发模式默认开启 | `watchdog` + HotReloader |
+| 自动测试 | `axn test` | `.test` 脚本 + `--from-state` |
+| 翻译提取 | `axn extract-strings` | 生成翻译模板 |
+| 翻译检查 | `axn check-strings` | 完整性验证 |
+| 静态分析 | `axn lint` | 废弃用法、未定义跳转等 |
+| 归档打包 | `axn build --pack` | 生成 `.npa` 归档 |
+| 截图 | F12（开发模式） | 保存到 `screenshots/` |
+
+所有开发者工具在发布包（`axn build`）中完全剥离。
+
+
+
+---
+
 ## 不是什么
 
 - 不是 Ren'Py 的分支或 fork
