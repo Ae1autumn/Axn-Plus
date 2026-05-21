@@ -746,6 +746,83 @@ label cutscene (rollback=none):             # 完全禁止回滚
 
 ---
 
+#### 自动推进与跳过模式（Auto / Skip Mode）
+
+**Auto 模式**
+
+自动推进：语音播完后（或无语音时等待指定时长），引擎自动推进对话，无需点击。
+
+```apy
+auto on          # 开启 Auto 模式
+auto off         # 关闭 Auto 模式
+auto toggle      # 切换
+```
+
+| 情况 | 行为 |
+|------|------|
+| 有语音 | 语音播完后等 `preferences.auto_delay` 秒再推进 |
+| 无语音 | 等 `preferences.auto_forward_time` 秒后推进 |
+| 遇到 `menu` / `choice` | 强制暂停，等用户选择 |
+| 遇到 `pause (hard)` | 强制暂停 |
+| 遇到 `input disable` 块 | Auto 被屏蔽，块结束后自动恢复 |
+| `<nw>` 行 | 不等待，立即推进（与手动模式一致）|
+| `<w>` 中途等待点 | 等满 `auto_forward_time` 后继续当前行（不推进到下一行）|
+| `parallel` interactive track 内 | Auto 在 track 内正常生效 |
+
+**`pause (hard)` 标记**：普通 `pause` 在 Auto/Skip 模式下被跳过；加 `(hard)` 后强制停止两种模式，等用户手动操作：
+
+```apy
+pause (hard)          # Auto/Skip 遇到此处强制停止
+pause (hard) 3.0      # 手动模式等 3 秒；Auto/Skip 模式强制停止，不自动推进
+```
+
+**Skip 模式**
+
+跳过模式：快速略过已读（或全部）对话。
+
+```apy
+skip on          # 开启 Skip 模式
+skip off         # 关闭 Skip 模式
+skip toggle      # 切换
+```
+
+Skip 策略通过 `preferences.skip_mode` 配置：
+
+| 策略 | 行为 |
+|------|------|
+| `"seen"`（默认） | 只跳过已读对话，遇到未读对话停止 |
+| `"all"` | 跳过全部对话，不区分已读/未读 |
+
+**已读状态追踪**：引擎为每条对话行维护唯一标识（`文件名 + label名 + 行偏移` 的哈希），首次到达时写入 `persistent`，跨存档槽共享，只增不减。分支路径上的对话互不影响——只有玩家实际经过的行才标记为已读。
+
+**Skip 停止条件：**
+
+| 条件 | 是否停止 | 是否可配置 |
+|------|---------|----------|
+| `menu` / `choice` | 永远停止 | ❌ |
+| 未读对话（`"seen"` 策略） | 停止 | — |
+| `pause (hard)` | 永远停止 | ❌ |
+| `modal show` | 停止 | ❌ |
+| `input disable` 块 | 默认停止 | ✅ |
+| `checkpoint` | 默认继续 | ✅ |
+
+```apy
+# options_window.apy
+engine:
+    skip:
+        stop_at_checkpoint  = false   # true 时在 checkpoint 处停止跳过
+        skip_transitions    = true    # 跳过时略过过渡动画
+        skip_voice          = true    # 跳过时略过语音（不播放）
+```
+
+**Auto/Skip 与回滚**：Auto 模式下回滚正常工作；Skip 模式下回滚被禁用（方向相反，同时触发时 Skip 优先，回滚键临时停止 Skip 并回退一步）。
+
+**Auto/Skip 快捷键**：在 `engine.keymap` 中配置（见定制按键映射章节），引擎默认 Auto 为 `a`，Skip（按住）为 `ctrl`。
+
+**Round-Trip**：`auto on/off/toggle`、`skip on/off/toggle`、`pause (hard)` 对应脚本区独立积木块；编辑器工具栏显示 Auto/Skip 状态指示灯；`pause (hard)` 在积木块上以"强制停止"图标与普通 `pause` 视觉区分。
+
+---
+
 #### 对话历史（Backlog）
 
 引擎层维护历史 buffer，UI 层由标准库模板提供。
@@ -766,6 +843,108 @@ engine:
 ```apy
 eileen: "这句话不会进历史记录。" (no_history)
 ```
+
+---
+
+#### NVL 模式
+
+NVL（Novel）模式：对话文本在全屏或大区域内逐段**累积显示**，不像 ADV 模式每行替换上一行。适合大段叙事、纯文字向作品。
+
+**角色声明**：在 `define char` 中设置 `mode "nvl"` 将该角色切换为 NVL 渲染路径：
+
+```apy
+define char narrator_nvl:
+    name ""
+    mode "nvl"                                        # 此角色走 NVL 渲染路径
+    nvl_window "ui/nvl_box.apy::NVLBox"              # NVL 窗口模板（不填用引擎默认）
+```
+
+**脚本层控制**：
+
+```apy
+# nvl: 块 —— 块内所有对话累积显示（块内任意角色均走 NVL 路径，无论其 mode 声明）
+nvl:
+    eileen: "第一段话。"
+    sophia: "第二段话，紧接在上面。"
+    @ "旁白也可以参与。"
+    eileen: "继续累积。"
+
+nvl clear          # 清除 NVL 区域内的所有文本（不退出 NVL 模式）
+nvl hide           # 退出 NVL 模式，对话框恢复 ADV 布局
+```
+
+**混用 ADV 和 NVL**：`nvl:` 块内走 NVL，块外走 ADV，同一 label 内可交替：
+
+```apy
+eileen: "ADV 对话，正常替换显示。"
+
+nvl:
+    eileen: "进入 NVL，开始累积。"
+    @ "旁白段落。"
+    sophia: "第三段。"
+
+nvl clear
+eileen: "NVL 清屏后回到 ADV。"
+```
+
+**修饰符**：NVL 块内对话行修饰符与 ADV 完全一致，支持表情、语音、`no_history`、`speed` 等。
+
+**回滚**：整个 `nvl:` 块作为回滚粒度——回滚时清屏并重显整块内容。
+
+**存档**：`nvl:` 块内不允许 `checkpoint`（编译期警告），存档须在块外触发。
+
+**`options_window.apy` NVL 配置**：
+
+```apy
+engine:
+    nvl:
+        max_entries    = 10       # NVL 区域最多显示条目数，超出时自动滚动
+        line_spacing   = 8
+        clear_on_scene = true     # scene 切换时自动 nvl clear
+```
+
+**Round-Trip**：`nvl:` 块对应脚本区 NVL 段落积木块；`nvl clear` / `nvl hide` 对应独立指令节点；`mode "nvl"` 在角色定义积木块中显示为渲染模式字段（下拉：`"adv"` / `"nvl"`）。
+
+---
+
+#### 气泡式台词（Speech Bubbles）
+
+对话框以气泡形式附着在立绘旁边，位置随立绘屏幕坐标实时更新，适合多角色并排说话的演出场景。
+
+**角色声明**：
+
+```apy
+define char eileen:
+    name "Eileen"
+    dialogue_mode "bubble"     # "box"（默认，固定位置对话框）/ "bubble"（气泡跟随立绘）
+    bubble:
+        anchor    "top"                    # 气泡附着方向：top / bottom / left / right
+        offset    (0, -20)                 # 相对锚点的像素偏移
+        tail      "ui/bubble_tail.png"     # 气泡尾巴图片（可选）
+        max_width 300                      # 最大宽度（px），超出自动换行
+        padding   (12, 8)
+        window    "ui/bubble.apy::Bubble"  # 自定义气泡模板（不填用引擎默认）
+```
+
+**运行时行为**：
+
+- 气泡位置每帧根据立绘当前屏幕坐标重新计算
+- 立绘不可见（`hide` 后）时，气泡退化为 `fallback_mode` 指定的行为，引擎输出警告
+- `together` 块内多角色气泡同时显示，各自独立定位；重叠检测不由引擎处理，开发者自行用 `offset` 调整
+- `camera move` / `camera follow` 期间气泡随立绘移动，无需额外处理
+
+**`options_window.apy` 气泡配置**：
+
+```apy
+engine:
+    bubble:
+        fallback_mode = "box"    # 立绘不可见时退化为 box（默认）/ "hide"（不显示）
+        z_order       = 50       # 气泡在 UI 层的 z_order
+```
+
+**`dialogue_mode` 混用**：同一 label 内允许 `"box"` 和 `"bubble"` 角色同时说话，引擎分别走各自渲染路径，无冲突。
+
+**Round-Trip**：`dialogue_mode "bubble"` 在角色定义积木块中显示为模式下拉；`bubble:` 子块展示为气泡配置面板；编辑器预览中气泡位置以相对立绘的虚线框标注。
 
 ---
 
@@ -865,6 +1044,39 @@ translate en:
 ```
 
 `translate` 块内只允许对话行和旁白，不允许引擎指令或 Python 块。引擎根据运行时语言设置选择对应块；当前语言无对应翻译时回退到第一个 `translate` 块并输出警告。同一 label 内的 `translate` 块必须紧跟原始对话行之后，解析器在启动时检查完整性。
+
+**翻译工具链**
+
+`axn` CLI 提供翻译字符串提取命令，将项目中所有 `translate` 块的内容导出为模板文件，供翻译人员填充：
+
+```
+# 提取所有待翻译字符串，生成翻译模板
+axn extract-strings --lang en --output strings/en.apy
+
+# 已有翻译模板时更新（新增字符串追加，已翻译内容保留）
+axn extract-strings --lang en --output strings/en.apy --update
+
+# 检查翻译完整性（列出缺失和多余条目）
+axn check-strings --lang en --input strings/en.apy
+```
+
+生成的模板文件为标准 `.apy` 格式，翻译人员直接编辑：
+
+```apy
+# strings/en.apy — 由 axn extract-strings 自动生成，手动编辑翻译内容
+
+translate en:
+    # scene.apy::morning_scene, line 42
+    eileen: "Good morning."
+
+translate en:
+    # scene.apy::morning_scene, line 43
+    @ "Sunlight streams through the window."
+```
+
+每个条目包含来源注释（文件、label、行号），方便翻译人员定位上下文。`--update` 时引擎按来源注释匹配已有翻译，源码行号变化时给出警告但保留翻译内容，源码文本变化时标记为需要重新翻译。
+
+`axn build` 时对每种语言的翻译完整性做静态检查，缺失条目以警告（非错误）列出，不阻止构建。
 
 ---
 
@@ -1440,6 +1652,87 @@ animation eileen_enter:
 
 ---
 
+#### 颜色矩阵与对象级着色器（Matrixcolor / Sprite Shader）
+
+`color_matrix` 属性作用于单个显示对象（立绘、图片）的整体颜色，CPU 端合成，不需要 GPU。与 `transform` 属性正交，可以同时存在。
+
+**内置颜色矩阵：**
+
+```apy
+show eileen (color_matrix=grayscale)                  # 去色
+show eileen (color_matrix=SaturationMatrix(0.3))      # 降低饱和度
+show eileen (color_matrix=TintMatrix(#8888ff, 0.4))   # 蓝调叠色（color, strength）
+show eileen (color_matrix=BrightnessMatrix(-0.2))     # 降低亮度（-1.0–1.0）
+show eileen (color_matrix=ContrastMatrix(1.5))        # 提高对比度
+show eileen (color_matrix=InvertMatrix)               # 颜色反相
+show eileen (color_matrix=none)                       # 清除
+```
+
+**与 `transform` 的结合：**
+
+```apy
+show eileen (transform=breathe, color_matrix=TintMatrix(#ff8888, 0.3))
+# transform 和 color_matrix 独立管理，互不覆盖
+```
+
+**`color_matrix` 不属于 `transform` 属性**：它是独立的后处理步骤，不参与 keyframe 插值，不受 `transform` 的 `repeat` / `mode` 逻辑影响。需要动画化颜色变化时（如角色受击闪红）使用 `transition_matrix` 参数：
+
+```apy
+show eileen (color_matrix=TintMatrix(#ff0000, 0.8), transition_matrix=0.1)
+# 0.1 秒内从当前 color_matrix 过渡到新值
+```
+
+**Layer 级颜色矩阵**：对整个层应用颜色变换，作用于层上所有元素的合成结果：
+
+```apy
+layer color_matrix sprite grayscale           # 整个 sprite 层去色
+layer color_matrix sprite TintMatrix(#8888ff, 0.5)
+layer color_matrix sprite none                # 清除
+```
+
+**自定义颜色矩阵**：继承 `ColorMatrix` 基类，实现 4×5 矩阵（RGBA + 偏移列）：
+
+```python
+class NightMatrix(ColorMatrix):
+    def __init__(self, intensity=1.0):
+        r = 0.3 * intensity
+        b = 0.7 * intensity
+        # 4x5 matrix: [r_row, g_row, b_row, a_row]
+        self.matrix = [
+            [1-r, 0, 0, 0, -0.1*intensity],
+            [0, 1-0.1*intensity, 0, 0, 0],
+            [0, 0, 1+b, 0, 0],
+            [0, 0, 0, 1, 0],
+        ]
+```
+
+```apy
+show eileen (color_matrix=NightMatrix(0.8))
+layer color_matrix bg NightMatrix(0.6)
+```
+
+**Layer 级 Transform**：对整个层应用 ATL transform 或过渡，作用于层的合成 surface：
+
+```apy
+layer transform sprite (fade_out 0.5)         # 整层渐出
+layer transform sprite (shake_x)             # 整层抖动
+layer transform sprite (transform=breathe)   # 整层呼吸动画
+layer transform sprite none                  # 清除层 transform
+```
+
+`layer transform` 的 transform 名称语义与 `show` 的 `(transform=X)` 完全一致，共享同一套 transform 定义。Layer transform 不参与 `wait for all`（始终视为后台动画）；需要等待时用具名参数 `(handle=layer_anim)` + `wait for`。
+
+```apy
+layer transform sprite (fade_out 1.0) (handle=layer_fade)
+wait for layer_fade
+scene bg_new_room
+layer transform sprite (transform=none)
+```
+
+**Round-Trip**：`color_matrix=` 在 `show` 积木块中显示为独立颜色矩阵字段，内置矩阵提供下拉选择，参数可编辑；`layer color_matrix` 和 `layer transform` 对应层管理面板中的独立字段。
+
+---
+
 #### 数据与逻辑
 
 **`with store` 块（批量状态变更）**
@@ -1773,6 +2066,31 @@ expoint after_prologue
 | `splash`（图片/视频/序列） | 启动序列面板内的 splash 节点；三种形式视觉区分；`skippable` 显示为开关；在 `input disable` 块内时标注"跳过已禁用" |
 | `warning` 块 | 启动序列面板内的警告节点；`once` 显示为开关并标注"已确认后跳过"；内部走完整控件编辑器 |
 | `loading` 块 | 启动序列面板内的加载节点；`tips` 子块显示轮播文字列表；`engine.load_progress` 标注为引擎内置变量 |
+| `auto on/off/toggle` | 脚本区 Auto 模式积木块，与 `skip on/off/toggle` 并列，模式状态指示灯 |
+| `skip on/off/toggle` | 脚本区 Skip 模式积木块；`skip_mode` 字段显示"seen/all"标签 |
+| `pause (hard)` | 脚本区暂停积木块上的"强制停止"开关；与普通 `pause` 视觉区分（红色边框） |
+| `nvl:` 块 | 脚本区 NVL 段落积木块，块内对话行累积显示；`nvl clear` / `nvl hide` 对应独立指令节点 |
+| `mode "nvl"` | 角色定义积木块中的渲染模式字段，下拉选择 `"adv"` / `"nvl"` |
+| `dialogue_mode "bubble"` | 角色定义积木块中的对话框模式字段；`bubble:` 子块展示为气泡配置面板 |
+| `color_matrix=` | `show` / `scene` 积木块中独立颜色矩阵字段；内置矩阵下拉选择，参数滑块可调；`none` 显示为"清除" |
+| `layer color_matrix` | 层管理面板中的层级颜色矩阵字段，与层 transform 并列 |
+| `layer transform` | 层管理面板中的层级 transform 字段；`handle=` 时显示句柄名；标注"始终后台动画" |
+| `preload` 指令 | 脚本区预加载积木块；路径列表可编辑；`preload label` 显示目标 label 名 |
+| `filter` 指令 | 脚本区音频滤波积木块；通道名下拉；效果列表可编辑；过渡时间字段可选；`none` 显示"清除效果" |
+| `define achievement` | 成就定义积木块，字段完整可解析；`hidden=true` 标注"未解锁前隐藏" |
+| `unlock achievement` | 脚本区解锁节点，成就名下拉选择（来自符号表） |
+| `unlock scene` | 脚本区场景解锁节点，label 名字段可编辑 |
+| `unlock music` | 脚本区音乐解锁节点，路径字段可编辑 |
+| `preferences:` 块 | `options_window.apy` 专属偏好面板，内置项完整可解析，自定义项按类型渲染 |
+| `$ preferences.xxx` | 脚本区偏好写入节点，字段名下拉选择，值字段可编辑 |
+| `engine.variant()` | 脚本区条件节点，变体名下拉选择；编译期已知 false 的分支灰色标注"将在打包时剥离" |
+| `engine.keymap` 配置 | `options_window.apy` 专属按键映射面板，按行为分组，键名可编辑；冲突标红 |
+| `side_image auto` | 角色定义积木块头像配置面板中的"自动命名约定"标记 |
+| `side_image:` 子块（带 states） | 头像配置面板内展示状态→图片映射，与角色 states 联动标注 |
+| `slot side_image` | 对话框模板编辑器中的头像占位符，尺寸可调；旁白行时标注"空插槽" |
+| 翻译工具链（`axn extract-strings`） | 编辑器翻译面板；显示语言覆盖率进度条；缺失条目高亮标注"需翻译" |
+| `character callbacks:` 子块 | 角色定义积木块中的回调面板，各回调函数名字段可编辑 |
+| `voice_tag` | 角色定义积木块中的语音分组字段，下拉选择已定义标签 |
 
 ### 静态与动态修饰符
 
@@ -1908,6 +2226,15 @@ Hint: Use 'show eileen (duration=0.3)' to make intent explicit.
 | `draggable` | — | `data` `preview` `layer` `free` `on_drag` `on_release` |
 | `droptarget` | — | `accept_type` `accept` `on_drop` |
 | `moveable` | — | `handle` `bounds` `snap` `persist` `persist_read` `persist_write` |
+| `auto` | `on` / `off` / `toggle` | — |
+| `skip` | `on` / `off` / `toggle` | — |
+| `nvl` | （块，或子命令 `clear` / `hide`） | — |
+| `filter` | 通道名（`music` / `sound` 等） | 效果列表具名参数（`reverb` `lowpass` `pitch` 等），duration（过渡时间） |
+| `preload` | 路径列表（可多个）或 `label 名` | — |
+| `unlock achievement` | 成就 id | — |
+| `unlock scene` | 显示名 | `label` `thumb` `category` |
+| `unlock music` | 路径 | `title` `composer` `thumb` `loop` |
+| `layer color_matrix` | 层名 → 矩阵名或 `none` | — |
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
 
@@ -2253,6 +2580,34 @@ AxnWarning: [ui] 'draggable' and 'moveable' both declared without 'handle'.
 **旁白在非交互轨道**：`@` / `narrator:` 不算对话行，允许出现在 `parallel` 的非交互轨道，不产生输入路由冲突。
 
 **`startup_sequence`**：在 `options_window.apy` 声明，早于 `start` label 执行。`splash` 支持静态图片、视频、图像序列三种形式；`warning` 块平台合规用，`once=true`（默认）确认后写入 `persistent` 不再显示；`loading` 块显示期间后台加载资源；`input disable` 块在 `startup_sequence` 内完全禁用输入含跳过；开发模式 `skip_startup=true` 跳过整个序列；`show_axn_logo=false` 禁用引擎内置 logo。
+
+**Auto/Skip 模式**：两者互斥，同时触发时 Skip 优先。Auto 遇 `menu`、`pause (hard)`、`modal show` 强制暂停；Skip 遇 `menu`、`pause (hard)`、`modal show` 永远停止，`"seen"` 策略下遇未读对话停止。Auto 期间回滚正常工作；Skip 期间回滚被禁用，回滚键临时打断 Skip 并回退一步。`pause (hard)` 是任何自动推进机制的硬停止点，不受兼容性容错原则影响——此行为属于"对引擎有严重影响"的情况。
+
+**已读追踪**：引擎为每条对话行维护唯一标识（`文件名 + label名 + 行偏移` 哈希），写入 `persistent`，跨存档槽共享，只增不减。`$` 动态 `say speaker` 行以运行时角色名 + 文本哈希作为标识（每次文本变化都是新标识，设计取舍：动态文本无法静态追踪）。
+
+**NVL 模式**：`nvl:` 块内文字累积，整块作为回滚单元。`nvl:` 块内禁止 `checkpoint`（编译期警告）。`nvl clear` 清屏不退出 NVL，`nvl hide` 退出 NVL。`nvl:` 块内所有角色走 NVL 渲染路径，无论其 `define char` 中的 `mode` 声明——块级语义优先于角色声明。
+
+**Speech Bubbles**：气泡位置每帧跟随立绘屏幕坐标重新计算，不参与 `wait for` 等待系统（纯视觉追踪）。立绘不可见时按 `fallback_mode` 处理，不报错，开发者自行决定降级策略。`together` 块内多角色气泡各自独立定位，重叠检测不由引擎处理。
+
+**`color_matrix` 独立于 `transform`**：`color_matrix` 是显示对象的后处理步骤，不参与 keyframe 插值，不受 `transform` 的 `repeat` / `mode` 影响。`transition_matrix` 参数提供过渡时间，内部实现为线性插值，不走 `transform` 系统的 easing。
+
+**Layer transform 始终后台动画**：`layer transform` 不参与 `wait for all`，等价于 `repeat forever` 的后台动画。需要等待时必须用 `(handle=)` + `wait for`。理由：层是全局共享的，前台动画等待语义在层级操作上易产生意外阻塞。
+
+**图片预加载静态分析范围**：编译器只分析静态可知的 `show` / `scene` / `expression` 资源路径（字符串字面量或 `define image` 引用），`$` 前缀动态引用标记为不可预测，不纳入预加载提示表。开发者可用 `preload` 指令手动补充动态场景的预加载。
+
+**音频滤波器参数插值**：`filter music (reverb(room=0.6)) 1.0` 中的过渡时间是在当前参数值和目标参数值之间线性插值，不是渐入渐出。对不同滤波器类型之间的切换（如从 `reverb` 切到 `lowpass`），无法插值，直接切换并输出警告。
+
+**成就 id 唯一性**：`define achievement` 的 id 在引擎启动时检查全局唯一性，冲突时报 `AxnCompileError`。`unlock achievement` 传入未定义的 id 时报 `AxnRuntimeError`（与 `AxnJumpError` 同级别处理）。
+
+**`preferences` 钩子实现**：写入 `preferences.xxx` 通过 `__setattr__` 钩子触发对应系统副作用（音量调整、窗口模式切换等）。读取 `preferences.xxx` 直接返回存储值，无副作用。`preferences` 对象本身不可通过 `store` 访问，`store["preferences"]` 会触发 `AxnNameError`。
+
+**场景回放 `store` 隔离**：回放期间创建 `store` 的浅拷贝副本作为执行环境，回放结束后丢弃，原始 `store` 不受影响。回放内的所有写入操作（`$` 赋值、`with store`）作用于副本，不影响原始状态。`persistent` 在回放期间**不隔离**（回放可以正常解锁成就等），开发者需自行确保回放内的 `unlock` 操作是幂等的。
+
+**HTTP Fetch 域名白名单**：白名单只在发布包（`axn build`）中生效，开发模式无限制。绕过方式（如通过 `python:` 块直接调用 `httpx`）不受白名单约束——白名单是 `engine.fetch` API 层的限制，不是系统级网络限制。开发者通过 Python 直接发请求时自行负责合规性。
+
+**平台变体在发布包中固化**：`axn build --platform android` 时，编译器将 `engine.variant("pc")` 等在目标平台上已知为 `false` 的分支标记为死代码并剥离。`engine.variant("touch")` 在 PC 触摸屏上可能为 `true`，不固化。
+
+**自动化测试的 `store` 状态**：测试脚本的 `assert store:` 读取当前执行中的 `store`，与游戏进程共享同一 `store`，无隔离。测试间如需状态隔离，每个测试文件从 `start` label 重新开始。
 
 ---
 
@@ -2823,6 +3178,108 @@ GUI 编辑和代码编辑之间的**双向同步**是核心设计约束：
 
 ---
 
+## 用户偏好系统（Preferences）
+
+`preferences` 是引擎维护的全局单例，存储**玩家系统偏好**，与游戏内容数据（`store`）和跨存档内容数据（`persistent`）严格分离。游戏退出时自动持久化，下次启动自动恢复。
+
+**`preferences` vs `store` vs `persistent` 的边界：**
+
+| 对象 | 存储内容 | 生命周期 | 例子 |
+|------|---------|---------|------|
+| `store` | 当前存档槽的游戏状态 | 跟随存档槽 | 好感度、当前天数、flag |
+| `persistent` | 跨存档的游戏内容数据 | 永久 | 已解锁 CG、已通关路线 |
+| `preferences` | 玩家系统偏好 | 永久，跨游戏实例 | 音量、文字速度、跳过策略 |
+
+### 内置偏好项
+
+引擎管理以下内置偏好项，在 `options_window.apy` 中声明默认值：
+
+```apy
+# options_window.apy
+preferences:
+    # 文字
+    text_speed        = 1.0       # 文字显示速度倍率（0.5 = 半速，0 = 瞬显）
+    skip_mode         = "seen"    # "seen"（只跳已读）/ "all"（跳全部）
+    skip_transitions  = true      # 跳过模式下略过过渡动画
+    skip_voice        = true      # 跳过模式下略过语音
+    auto_forward_time = 2.0       # Auto 模式无语音时的等待秒数
+    auto_delay        = 0.3       # Auto 模式语音播完后额外等待秒数
+
+    # 音量（0.0–1.0）
+    music_volume      = 0.8
+    sound_volume      = 0.8
+    voice_volume      = 0.9
+    ambient_volume    = 0.6
+
+    # 显示
+    fullscreen        = false
+    display_index     = 0         # 多显示器时使用哪块屏幕
+    renderer          = "auto"    # "auto" / "hardware" / "software"
+
+    # 无障碍
+    self_voicing      = false     # TTS 自动朗读（见无障碍章节）
+    self_voicing_rate = 1.0       # TTS 语速倍率
+```
+
+### 脚本层访问
+
+```apy
+# 读取
+$ speed = preferences.text_speed
+$ vol   = preferences.music_volume
+
+# 写入（立即生效，自动持久化）
+$ preferences.text_speed   = 0.5
+$ preferences.music_volume = store["saved_vol"]
+```
+
+引擎在写入时立即应用对应系统（改音量时立即调整播放器，改全屏时立即切换窗口模式）。
+
+### 开发者自定义偏好项
+
+在 `options_window.apy` 的 `preferences:` 块中添加自定义条目，引擎自动纳入持久化管理：
+
+```apy
+preferences:
+    music_volume  = 0.8       # 内置项
+    show_cg_name  = true      # 自定义项：画廊中是否显示 CG 名称
+    dialogue_font = "default"
+```
+
+自定义项通过 `preferences.show_cg_name` 访问，与内置项完全一致。
+
+### 音量通道绑定
+
+内置音量偏好与音频通道自动绑定：
+
+| 偏好项 | 自动作用于 |
+|--------|----------|
+| `music_volume` | `music` 通道 |
+| `sound_volume` | `sound` 通道 |
+| `voice_volume` | `voice` 通道 |
+| `ambient_volume` | `ambient` 通道 |
+
+自定义通道在 `options_window.apy` 中声明绑定关系：
+
+```apy
+engine:
+    audio:
+        channel_bindings:
+            bg_layer = preferences.bg_layer_volume
+```
+
+### 关键设计决策
+
+**`preferences` 不写入 `store`**：读档时 `store` 恢复到存档时的游戏状态，`preferences` 保持玩家当前设置不变，不随存档回退。
+
+**写入立即生效**：`$ preferences.music_volume = 0.5` 执行后立刻调整播放音量，引擎内部通过属性钩子实现，无需额外 `apply` 调用。
+
+**`text_speed = 0`**：瞬间显示全部文字，等价于对每行文本触发 `<fast>` 标签效果。
+
+**跨版本兼容**：新版本新增的偏好项，旧持久化文件中缺失时使用 `options_window.apy` 声明的默认值补齐，不报错。
+
+---
+
 ## 存档机制
 
 ### 作用域与序列化
@@ -3062,6 +3519,39 @@ canvas (size=(100, 100)):           # Python 逃逸绘制，局部 surface 坐�
         pygame.draw.circle(surface, (255, 0, 0), (50, 50), 30)
 ```
 
+**`frame`**：九宫格拉伸图片，只拉伸中间区域，四角保持原始像素，适合对话框、面板、按钮等需要自适应尺寸的 UI 元素：
+
+```apy
+frame "ui/panel.png" (margin=(12, 12, 12, 12))   # 上右下左边距（px）
+frame "ui/panel.png" (margin=12)                  # 四边相同
+frame "ui/panel.png" (margin=(12, 8))             # 上下12，左右8
+```
+
+`frame` 作为 `background` 属性的值使用（最常见）：
+
+```apy
+gui dialogue_box:
+    background frame("ui/panel.png", margin=16)
+    padding (20, 12)
+    slot children
+
+gui option_button(label):
+    style:
+        background frame("ui/btn_normal.png", margin=8)
+        hovered: background frame("ui/btn_hover.png", margin=8)
+        pressed: background frame("ui/btn_press.png", margin=8)
+    text label (anchor=center)
+```
+
+`frame` 也可以作为独立控件使用（作为容器背景）：
+
+```apy
+frame "ui/panel.png" (margin=12, size=(300, 200)):
+    slot children
+```
+
+**`frame` vs `image`**：`image` 直接缩放整张图，圆角等装饰性元素会随尺寸变形；`frame` 只拉伸中间，四角像素完全保留，是 UI 面板的正确做法。
+
 #### 交互控件
 
 **`button`**
@@ -3140,6 +3630,57 @@ checkbox_group bind=store["unlocked"] options=["结局A", "结局B", "结局C"]
 ```apy
 dropdown bind=store["lang"] options=["中文", "English", "日本語"]
 ```
+
+#### 头像（Side Image）
+
+`side_image` 是角色对话时显示在对话框旁边的小头像图，通常在对话框左侧。引擎自动根据当前说话角色切换，无需手动管理。
+
+**角色声明**（在 `define char` 中）：
+
+```apy
+define char eileen:
+    name "Eileen"
+    side_image "ui/side/eileen_neutral.png"     # 静态单张
+
+    # 或：跟随表情状态切换（states 模型）
+    side_image:
+        states:
+            neutral  "ui/side/eileen_neutral.png"
+            happy    "ui/side/eileen_happy.png"
+            sad      "ui/side/eileen_sad.png"
+        default_expression "neutral"
+
+    # 或：引用角色自身的 states 定义（自动同步表情）
+    side_image auto      # 使用与角色 states 同名的 ui/side/{char_name}_{state}.png
+```
+
+`side_image auto` 时，引擎按 `ui/side/{角色名}_{state}.png` 命名约定查找，找不到时回退到 `ui/side/{角色名}.png`，仍找不到则不显示（不报错）。
+
+**渲染位置**：`side_image` 渲染在对话框内，位置和尺寸在对话框 UI 模板中通过 `slot side_image` 声明：
+
+```apy
+# ui/dialogue_box.apy
+gui DialogueBox:
+    hstack gap=12:
+        slot side_image (size=(80, 80))     # 头像占位区，引擎自动填充当前角色头像
+        vstack:
+            slot name_label
+            slot dialogue_text
+```
+
+引擎在渲染当前对话行时，将说话角色的 `side_image`（当前表情对应的图片）注入到 `slot side_image` 区域。旁白行（`@` / `narrator:`）说话时，`slot side_image` 渲染为空（由 UI 模板决定布局如何处理空插槽）。
+
+**`same_turn` 行为**：同一轮对话（同一等待点内）切换表情时，`side_image` 是否随之更新：
+
+```apy
+# options_window.apy
+engine:
+    side_image:
+        same_turn = true     # true（默认）：表情切换时立即更新头像；false：等到下一行才更新
+        show_during_nvl = false   # NVL 模式下是否显示头像（默认 false）
+```
+
+**Round-Trip**：`side_image:` 子块在角色定义积木块中显示为头像配置面板；`auto` 关键字显示为"自动命名约定"标记；`slot side_image` 在对话框模板编辑器中显示为头像占位符，尺寸可调。
 
 #### 展示控件
 
@@ -4925,6 +5466,129 @@ import LivePortrait from "characters/live_portrait.py"
 
 符号表里同一名字对应多种类型时，引擎启动时报错，要求重命名消歧义。
 
+### 平台变体检测（Platform Variants）
+
+引擎提供 `engine.variant()` 接口，检测当前运行平台特征，用于脚本层和 UI 层做条件适配。
+
+**内置变体名：**
+
+| 变体 | 为 `true` 的条件 |
+|------|----------------|
+| `"pc"` | Windows / macOS / Linux |
+| `"mobile"` | Android |
+| `"touch"` | 触摸屏可用（Android，或 PC 触摸屏） |
+| `"small"` | 屏幕宽度 < 960px（竖屏手机） |
+| `"wide"` | 屏幕宽高比 ≥ 16:9 |
+| `"windows"` | Windows |
+| `"macos"` | macOS |
+| `"linux"` | Linux |
+| `"android"` | Android |
+
+**脚本层使用：**
+
+```apy
+if engine.variant("mobile"):
+    $ preferences.text_speed = 1.2    # 移动端默认稍快
+
+if engine.variant("small"):
+    show gui mobile_hud
+else:
+    show gui pc_hud
+```
+
+**UI 层使用：**
+
+```apy
+screen main_menu:
+    if engine.variant("touch"):
+        use touch_menu_layout
+    else:
+        use pc_menu_layout
+```
+
+**`options_window.apy` 自定义变体：**
+
+```apy
+engine:
+    variants:
+        handheld = engine.variant("mobile") or (engine.variant("touch") and engine.variant("small"))
+```
+
+```apy
+if engine.variant("handheld"):
+    show gui handheld_controls
+```
+
+**发布包中变体值在打包时固化为常量**（`axn build --platform android` 时），编译器将已知为 `false` 的分支剥离，减少包体积。
+
+---
+
+### 定制按键映射（Custom Keymap）
+
+引擎内置行为的按键绑定可以在 `options_window.apy` 中完整重映射，覆盖默认值。
+
+**内置行为的默认按键：**
+
+| 行为 | 默认键 |
+|------|--------|
+| `advance` | 左键单击、`Space`、`Enter` |
+| `rollback` | 鼠标右键、`PageUp` |
+| `skip` | `Ctrl`（按住） |
+| `auto` | `a` |
+| `hide_window` | `h` |
+| `screenshot` | `F12` |
+| `pause_menu` | `Escape` |
+| `history` | 鼠标中键、`PageDown` |
+| `self_voicing_toggle` | `v` |
+| `director` | `Shift+d`（仅开发模式） |
+| `devtools` | `` Shift+` ``（仅开发模式） |
+
+**重映射语法：**
+
+```apy
+# options_window.apy
+engine:
+    keymap:
+        advance:       ["mouseup_1", "space", "return", "KP_ENTER"]
+        rollback:      ["mouseup_3", "pageup", "backspace"]
+        skip:          ["ctrl"]
+        auto:          ["a"]
+        hide_window:   ["h", "mouseup_2"]
+        screenshot:    ["f12"]
+        pause_menu:    ["escape"]
+        history:       ["mouseup_2", "pagedown"]
+```
+
+键名格式遵循与 `on key` 相同的规范（修饰键小写，顺序固定 `ctrl→shift→alt→key`），鼠标按键用 `mouseup_N` / `mousedown_N`（N 为按键编号，1=左键，2=中键，3=右键）。
+
+**手柄映射：**
+
+```apy
+engine:
+    keymap:
+        gamepad:
+            advance:      ["gamepad_a", "gamepad_cross"]
+            rollback:     ["gamepad_b", "gamepad_circle"]
+            skip:         ["gamepad_lt"]
+            auto:         ["gamepad_rt"]
+            pause_menu:   ["gamepad_start"]
+            history:      ["gamepad_select"]
+```
+
+手柄键名格式：`gamepad_` 前缀 + Xbox 命名（`a`/`b`/`x`/`y`/`lt`/`rt`/`lb`/`rb`/`start`/`select`/`up`/`down`/`left`/`right`）。PS 命名作为别名支持（`cross`=`a`，`circle`=`b`，`square`=`x`，`triangle`=`y`）。
+
+**Steam Input API**：开启 Steamworks 时，手柄输入优先走 Steam Input，`gamepad_*` 映射自动转换为 Steam Input Action 名称，支持玩家在 Steam 大屏幕模式中自定义手柄映射。
+
+**按键冲突检测**：引擎启动时检测同一行为集合内是否有重复按键绑定，发现时输出警告（不阻止运行）：
+
+```
+AxnWarning: [keymap] Key 'mouseup_3' is bound to both 'rollback' and 'history'.
+  Last binding wins: 'history'.
+  → options_window.apy, keymap section
+```
+
+---
+
 ### 引擎目录结构
 
 ```
@@ -4978,14 +5642,37 @@ axn_plus/
       transition.py          # 内置过渡效果
       transform.py           # keyframe 动画系统
       saveable.py            # @saveable / Saveable 基类
+      color_matrix.py        # ColorMatrix 基类及内置矩阵
+      nvl.py                 # NVL 模式渲染器
+      bubble.py              # Speech Bubble 渲染器
+   core/
+      preloader.py           # 图片预加载系统
+      preferences.py         # Preferences 单例
+      achievement.py         # 成就系统
+      read_tracker.py        # 已读对话行追踪（persistent）
+      variant.py             # 平台变体检测
+   platform/
+      __init__.py
+      steam.py               # Steamworks API 封装
+      tts.py                 # TTS / Self-Voicing 后端抽象
+      tts_windows.py         # SAPI 5
+      tts_macos.py           # AVSpeechSynthesizer
+      tts_linux.py           # espeak-ng
+      tts_android.py         # Android TextToSpeech (Pyjnius)
+   audio/
+      __init__.py
+      filters.py             # DSP 滤波器链
    cli/
       __init__.py
       init.py                # axn init，生成项目骨架
       build.py               # axn build，打包发布
       run.py                 # axn run，开发期启动
+      test.py                # axn test，自动化测试 runner
+      extract_strings.py     # axn extract-strings，翻译字符串提取
+      check_strings.py       # axn check-strings，翻译完整性检查
 ```
 
-`parser/` 独立，供 Axn-Editor 的 LSP 插件直接复用，不与运行时耦合。LSP 插件复用 `parser/incremental_parser.py`，不使用全量三遍扫描器，保证实时补全响应速度。两层实现共享 `lexer.py` 和 `ast_nodes.py`。`core/` 中无任何 pygame 或 Qt import，后端通过 `backends/base.py` 的抽象接口交互。`cli/` 提供 `axn init` / `axn run` / `axn build` 三个子命令。
+`parser/` 独立，供 Axn-Editor 的 LSP 插件直接复用，不与运行时耦合。LSP 插件复用 `parser/incremental_parser.py`，不使用全量三遍扫描器，保证实时补全响应速度。两层实现共享 `lexer.py` 和 `ast_nodes.py`。`core/` 中无任何 pygame 或 Qt import，后端通过 `backends/base.py` 的抽象接口交互。`cli/` 提供 `axn init` / `axn run` / `axn build` / `axn test` / `axn extract-strings` / `axn check-strings` 子命令。
 
 ---
 
@@ -5545,9 +6232,9 @@ class Instruction:
 |------|---------|
 | 控制流 | `JUMP` `JUMP_IF` `JUMP_IF_NOT` `CALL` `RETURN` `HALT` |
 | Python 块 | `EXEC_PYTHON` `PUSH_EXPR` |
-| 对话与旁白 | `DIALOGUE` `NARRATOR` `WAIT_CLICK` |
-| 显示控制 | `SHOW` `HIDE` `SCENE` `CLEAR` `EXPRESSION_CMD` |
-| 音视频 | `PLAY_AUDIO` `STOP_AUDIO` `PAUSE_AUDIO` `RESUME_AUDIO` `PLAY_VIDEO` `STOP_VIDEO` |
+| 对话与旁白 | `DIALOGUE` `NARRATOR` `WAIT_CLICK` `NVL_APPEND` `NVL_CLEAR` `NVL_HIDE` |
+| 显示控制 | `SHOW` `HIDE` `SCENE` `CLEAR` `EXPRESSION_CMD` `COLOR_MATRIX` `LAYER_COLOR_MATRIX` `LAYER_TRANSFORM` |
+| 音视频 | `PLAY_AUDIO` `STOP_AUDIO` `PAUSE_AUDIO` `RESUME_AUDIO` `PLAY_VIDEO` `STOP_VIDEO` `AUDIO_FILTER` |
 | 镜头 | `CAMERA` |
 | 等待 | `WAIT_DURATION` `WAIT_FOR` |
 | 菜单 | `MENU` `CHOICE` |
@@ -5556,8 +6243,11 @@ class Instruction:
 | 输入控制 | `INPUT_DISABLE` `INPUT_ENABLE` |
 | 模态框 | `MODAL_SHOW` `MODAL_HIDE` |
 | 并行 | `PARALLEL_BEGIN` `PARALLEL_END` |
-| 存取 | `LOAD_CONST` `STORE_VAR` `LOAD_VAR` `WITH_STORE` |
+| 存取 | `LOAD_CONST` `STORE_VAR` `LOAD_VAR` `WITH_STORE` `PREF_SET` |
 | 动画 | `CALL_ANIMATION` |
+| 模式控制 | `AUTO_SET` `SKIP_SET` |
+| 成就 | `UNLOCK_ACHIEVEMENT` `UNLOCK_SCENE` `UNLOCK_MUSIC` |
+| 资源 | `PRELOAD` |
 | 调试 | `ASSERT`（release 模式不生成） `DEBUG_BREAK` |
 
 每条指令携带：opcode、operand（常量池索引或直接值）、源码行号、源码文件名。行号和文件名用于运行时错误定位。
@@ -5775,6 +6465,38 @@ Axn-Plus 随引擎附带一批开箱即用的功能模块。按实现层级分�
 - 引擎层：缩略图缓存管理、懒加载调度、`persistent` 读写
 - `.apy` 模板：默认画廊UI（`grid` 布局、解锁遮罩、全屏预览、翻页）
 
+#### 图片预加载系统（Image Preloader）
+
+视觉小说的图片切换密集，不预加载会产生明显卡顿。引擎在编译期从 AST 静态分析 `show` / `scene` / `expression` 指令的资源引用，构建预加载提示表；运行时在当前画面显示期间后台加载接下来若干步可能出现的资源。
+
+**静态分析**：编译器第三遍扫描时，对每个 label 建立资源依赖列表（当前 label 用到的图片路径集合）。`$` 动态 `show $sprite` 无法静态分析，标记为"不可预测"，不纳入提示表。
+
+**运行时行为**：VM 执行到一条指令时，预加载器在后台线程加载距离当前位置 N 步内（默认 `preload_lookahead = 3`）所有静态可知的图片资源。加载完成前被用到的资源走同步加载（阻塞一帧），并输出开发模式警告。
+
+**缓存管理**：
+
+```apy
+# options_window.apy
+engine:
+    preload:
+        lookahead      = 3        # 向前预看的指令步数
+        cache_limit_mb = 256      # 图片缓存上限（MB），超出时 LRU 淘汰
+        cache_limit_mb = 0        # 0 = 不限制（桌面端可选）
+        evict_on_scene = true     # scene 切换时主动淘汰当前场景资源（节省内存）
+```
+
+**手动预加载**（用于分支预测不到的场景）：
+
+```apy
+preload "assets/eileen/angry.png"
+preload "assets/bg/throne_room.png" "assets/eileen/formal.png"   # 多个
+preload label route_a_start          # 预加载指定 label 的静态资源集合
+```
+
+**Android 特殊处理**：Android 系统在低内存时会主动回收进程，`cache_limit_mb` 默认值在 Android 平台自动降为 `128`，可在 `options_window.apy` 中覆盖。
+
+**Round-Trip**：`preload` 指令对应脚本区独立积木块，路径列表可编辑；`preload label` 显示目标 label 名字段。
+
 #### 动态/静态精灵（Sprite）
 
 静态精灵为引擎现有能力。动态精灵即 `AnimatedSprite` 接口，已在核心设计中定义。此条目确认两者均为引擎内置，不通过 `.apy` 实现。
@@ -5797,6 +6519,62 @@ show PanningSprite("bg/city_wide.png") (pos=(0.3, 0.0), size=1.2, duration=5.0)
 | `size` | 缩放系数，`1.0` 为原始大小 |
 | `duration` | 从当前位置移动到目标位置的时长（秒） |
 | `loop` | 到达边界后反向，形成往返循环 |
+
+#### 音频滤波器（Audio Filters）
+
+实时 DSP 效果链，作用于单个音频通道的播放输出。纯 `.apy` 无法实现，需要后端音频管线支持（Pygame 通过 `pygame.mixer` 的后处理钩子实现，Qt 通过 `QAudioSink` 过滤器链实现）。
+
+**使用语法：**
+
+```apy
+# 对指定通道施加滤波器
+filter music (reverb(room=0.6, damp=0.5))           # 混响
+filter music (lowpass(cutoff=800))                   # 低通（电话效果）
+filter music (highpass(cutoff=3000))                 # 高通
+filter music (pitch(factor=0.85))                    # 音调变换（降调）
+filter music (echo(delay=0.3, decay=0.4))            # 回声
+filter music (distortion(drive=0.5))                 # 失真
+
+# 叠加多个效果
+filter music (lowpass(cutoff=1200), reverb(room=0.3))
+
+# 清除滤波器
+filter music none
+
+# 带过渡时间（在 N 秒内平滑插值到新参数）
+filter music (reverb(room=0.8)) 1.0
+```
+
+**`voice` 通道的特殊用途**：常用于角色声音变形（危险状态、幻觉、变身场景）：
+
+```apy
+filter voice (pitch(factor=0.7), reverb(room=0.4))
+eileen: "……这是你的声音吗？"
+filter voice none 0.5
+```
+
+**`options_window.apy` 默认滤波器**：可为指定通道设置全局默认效果，游戏启动时自动应用：
+
+```apy
+engine:
+    audio:
+        default_filters:
+            ambient: reverb(room=0.2, damp=0.7)   # 环境音默认带轻微混响
+```
+
+**内置滤波器参数：**
+
+| 滤波器 | 参数 | 说明 |
+|--------|------|------|
+| `reverb` | `room` (0–1), `damp` (0–1), `wet` (0–1) | 混响 |
+| `echo` | `delay` (秒), `decay` (0–1) | 回声 |
+| `lowpass` | `cutoff` (Hz) | 低通，截断高频 |
+| `highpass` | `cutoff` (Hz) | 高通，截断低频 |
+| `pitch` | `factor` (倍率，1.0=原音调) | 音调变换 |
+| `distortion` | `drive` (0–1) | 失真/破音 |
+| `compressor` | `threshold` (dB), `ratio` | 动态压缩 |
+
+**Round-Trip**：`filter` 指令对应脚本区音频滤波积木块；通道名下拉选择；效果列表可编辑；过渡时间字段可选；`filter music none` 显示为"清除效果"节点。
 
 #### 鼠标自动切换（Cursor Manager）
 
@@ -5957,6 +6735,323 @@ engine:
     allow_fake_error_screen = false   # 默认关闭，设为 true 才允许 show error_screen
 ```
 
+#### 成就系统（Achievement）
+
+成就注册、触发、持久化存储（`persistent`），以及平台 API 对接。
+
+**成就声明**（在 `options_window.apy` 或任意顶层 `.apy` 文件中）：
+
+```apy
+define achievement first_meeting:
+    name        "初次相遇"
+    description "第一次见到了 Eileen。"
+    icon        "ui/ach/first_meeting.png"
+    hidden      = false       # true 时在未解锁前隐藏名称和描述
+
+define achievement true_ending:
+    name        "真实结局"
+    description "到达了游戏的真正结局。"
+    icon        "ui/ach/true_ending.png"
+    hidden      = true
+```
+
+**触发**：
+
+```apy
+unlock achievement first_meeting        # 解锁，重复调用静默忽略
+unlock achievement true_ending
+
+# 条件解锁语法糖
+unlock achievement first_meeting if not persistent.achievements["first_meeting"]
+```
+
+**查询**：
+
+```apy
+$ is_unlocked = achievement.is_unlocked("first_meeting")
+$ all_unlocked = achievement.all_unlocked()    # list[str]
+```
+
+**持久化**：解锁状态自动写入 `persistent.achievements`（`dict[str, bool]`），无需开发者手动管理。
+
+**Steamworks API 对接**（见下文）：`unlock achievement` 触发时，若 Steam 平台可用，引擎自动调用 `ISteamUserStats::SetAchievement`，无需脚本层额外代码。
+
+**`options_window.apy` 配置**：
+
+```apy
+engine:
+    achievements:
+        provider = "auto"    # "auto"（自动检测平台）/ "steam" / "local"（仅本地，不上报）
+```
+
+**Round-Trip**：`define achievement` 对应成就定义积木块，字段完整可解析；`unlock achievement` 对应解锁节点，成就名下拉选择（来自符号表）；编辑器成就面板显示所有已定义成就和当前解锁状态。
+
+---
+
+#### Steamworks API
+
+Steam 平台功能的引擎层封装，通过 `ctypes` 加载 `steam_api.dll` / `libsteam_api.so`，不依赖第三方 Python 包。在 `options_window.apy` 中开启：
+
+```apy
+engine:
+    extensions:
+        builtins:
+            steamworks = true
+```
+
+**自动初始化**：引擎启动时检测 `steam_appid.txt` 是否存在，存在则自动初始化 Steamworks，失败时静默降级（不阻止游戏启动）。
+
+**成就自动同步**：`unlock achievement` 触发后，引擎自动调用 `SetAchievement` + `StoreStats`，无需脚本层额外代码。
+
+**Steam 云存档**：与 Cloud Save 插件集成，Steamworks 作为一种 provider：
+
+```apy
+engine:
+    cloud_save:
+        provider = "steam"    # 使用 Steam 云存档
+```
+
+**DLC 检测**：
+
+```apy
+$ has_dlc = engine.steam.is_dlc_owned(480)   # 传入 DLC AppID
+if has_dlc:
+    call axn::dlc_chapter3.start
+```
+
+**排行榜**：
+
+```apy
+# 上传分数
+$ engine.steam.upload_leaderboard("speedrun_ch1", store["clear_time"])
+
+# 下载排行榜（异步，结果通过回调或 store 变量返回）
+$ engine.steam.fetch_leaderboard("speedrun_ch1", count=10, callback="on_leaderboard_fetched")
+
+on_event channel="global" "on_leaderboard_fetched": (entries):
+    $ store["leaderboard"] = entries
+    show screen leaderboard_panel
+```
+
+**开发模式**：未安装 Steam 或 `steam_appid.txt` 不存在时，所有 `engine.steam.*` 调用返回安全默认值（成就静默忽略，排行榜返回空列表），不报错，方便无 Steam 客户端的开发环境调试。
+
+---
+
+#### 自配音 / 无障碍朗读（Self-Voicing）
+
+系统 TTS（Text-To-Speech）朗读对话文本和 UI 标签，供视障用户使用。
+
+**平台 TTS 后端：**
+
+| 平台 | 实现 |
+|------|------|
+| Windows | SAPI 5（`win32com.client`） |
+| macOS | `AVSpeechSynthesizer`（通过 `subprocess` 调用 `say` 命令） |
+| Linux | `espeak-ng`（需系统安装） |
+| Android | `android.speech.tts.TextToSpeech`（通过 Pyjnius） |
+
+**开关**：
+
+```apy
+$ preferences.self_voicing = True    # 开启
+$ preferences.self_voicing = False   # 关闭
+```
+
+键盘快捷键默认绑定在 `engine.keymap.self_voicing_toggle`（默认 `v`）。
+
+**朗读优先级**：
+
+1. 对话行的 TTS 文本（`voice_text=` 具名参数，用于与显示文本不同的朗读内容）
+2. 对话行的显示文本（去除富文本标签后的纯文字）
+3. UI 控件的 `accessibility_label=` 参数
+4. UI 控件的 `label` 内容（`button`、`text` 等）
+
+```apy
+eileen: "…" (voice_text="Eileen 沉默了。")    # 显示省略号，朗读描述性文字
+button "×" (accessibility_label="关闭对话框") on_click: Return()
+```
+
+**朗读时机**：
+
+- 对话行：文字开始显示时触发（不等打字机效果完成）
+- UI 控件获得焦点时触发
+- `menu` 选项获得焦点时朗读选项文本
+
+**`options_window.apy` 配置**：
+
+```apy
+engine:
+    self_voicing:
+        enabled_by_default = false
+        read_narrator      = true    # 旁白是否朗读
+        read_ui            = true    # UI 控件是否朗读
+        interrupt          = true    # 新文本触发时打断上一段朗读
+```
+
+---
+
+#### 角色回调（Character Callbacks）
+
+在角色说话生命周期的关键节点注入自定义逻辑，不需要在每条对话行前后手动插入代码。
+
+**声明**（在 `define char` 内）：
+
+```apy
+define char eileen:
+    name "Eileen"
+    sprites "assets/eileen/"
+    callbacks:
+        on_start:    eileen_on_start      # 对话行开始显示时触发
+        on_advance:  eileen_on_advance    # 用户点击推进时触发（含 <w> 中途点击）
+        on_end:      eileen_on_end        # 对话行完全结束后触发
+        on_voice:    eileen_on_voice      # 语音开始播放时触发
+```
+
+回调函数在 Python 中定义：
+
+```python
+def eileen_on_start(event):
+    # event.char     : 角色对象
+    # event.text     : 当前对话文本（已插值）
+    # event.line     : 源码行号
+    # event.filename : 源码文件名
+    store["last_speaker"] = "eileen"
+
+def eileen_on_end(event):
+    store["dialogue_count"] += 1
+```
+
+**全局回调**（作用于所有角色）：
+
+```apy
+# options_window.apy
+engine:
+    character_callbacks:
+        on_start:   global_dialogue_start
+        on_end:     global_dialogue_end
+```
+
+全局回调在角色自身回调之后触发。
+
+**`voice_tag`**：为角色声音分组，方便统一控制音量（如"所有 NPC 音量"独立于"主角音量"）：
+
+```apy
+define char eileen:
+    voice_tag "heroine"    # 音量分组标签
+
+define char merchant:
+    voice_tag "npc"
+```
+
+```apy
+# options_window.apy
+preferences:
+    heroine_volume = 1.0    # 自定义偏好项，绑定到 voice_tag
+    npc_volume     = 0.8
+
+engine:
+    audio:
+        voice_tag_bindings:
+            heroine = preferences.heroine_volume
+            npc     = preferences.npc_volume
+```
+
+**Round-Trip**：`callbacks:` 子块在角色定义积木块中显示为回调面板，各回调函数名字段可编辑；`voice_tag` 显示为独立字段，下拉选择已定义的标签。
+
+---
+
+#### 场景回放与音乐空间（Scene Replay / Music Room）
+
+**场景回放**：允许玩家从主菜单重新观看已解锁的剧情段落。
+
+解锁触发：在剧情脚本中调用 `unlock scene`：
+
+```apy
+label ch1_ending:
+    unlock scene "第一章结局" (
+        label     = ch1_ending,
+        thumb     = "ui/replay/ch1_end.png",
+        category  = "第一章"
+    )
+    eileen: "再见。"
+```
+
+重放时的 `store` 隔离：回放期间引擎创建一个 `store` 快照副本，回放结束后恢复原始 `store`，游戏状态不受影响。回放内的 `checkpoint` 指令静默忽略（不触发存档）。
+
+引擎层处理：`persistent` 解锁记录、`store` 隔离沙箱、回放期间 Auto 模式默认开启；`.apy` 模板提供默认回放选择界面。
+
+```apy
+call axn::scene_replay.show     # 打开回放选择界面
+```
+
+**音乐空间**：展示已解锁 BGM，可试听，带进度条和曲目信息。
+
+解锁触发：
+
+```apy
+unlock music "bgm/morning.ogg" (
+    title    = "清晨",
+    composer = "...",
+    thumb    = "ui/music/morning.png",
+    loop     = true
+)
+```
+
+```apy
+call axn::music_room.show     # 打开音乐空间界面
+```
+
+`options_window.apy` 配置：
+
+```apy
+engine:
+    scene_replay:
+        store_isolation = true     # 回放期间隔离 store（默认 true，强烈建议保持）
+        auto_mode       = true     # 回放期间默认开启 Auto 模式
+    music_room:
+        loop_by_default = true
+```
+
+---
+
+#### HTTP 请求（Fetch）
+
+引擎提供异步 HTTP 接口，不阻塞游戏主循环，基于 `httpx` 实现（与 Downloader 共用同一底层）。
+
+```apy
+# 发起请求，结果通过回调或 store 变量返回
+$ engine.fetch(
+    url      = "https://api.example.com/leaderboard",
+    method   = "GET",
+    headers  = {"Authorization": f"Bearer {store['token']}"},
+    callback = "on_fetch_done"
+)
+
+# 等待结果（阻塞执行流，适合加载界面）
+$ result = engine.fetch_sync("https://api.example.com/save", method="POST", json=store.to_dict())
+```
+
+**异步回调模式**：
+
+```apy
+on_event channel="global" "on_fetch_done": (response):
+    if response.status == 200:
+        $ store["leaderboard"] = response.json()
+    else:
+        $ store["fetch_error"] = response.status
+```
+
+**安全限制**：发布包中，所有允许的域名须在 `options_window.apy` 中白名单声明，未声明域名的请求在发布包中被拒绝（开发模式不限制）：
+
+```apy
+engine:
+    fetch:
+        allowed_domains:
+            - "api.example.com"
+            - "cdn.example.com"
+        timeout = 10.0    # 超时秒数
+```
+
 ---
 
 ### 标准库 `.apy`
@@ -6095,6 +7190,148 @@ call axn::map.show(
     nodes      = store["map_nodes"],   # list[dict]，含位置、解锁状态、跳转目标
     on_select  = map_node_selected
 )
+```
+
+#### 标准 UI 画面（Standard Screens）
+
+提供开箱即用的标准界面模板，开发者可直接使用或替换样式。所有界面基于 `screen` + `gui` 实现，通过 `call axn::screens.xxx` 调用。
+
+**存档 / 读档界面**：
+
+```apy
+call axn::screens.save_menu                       # 存档界面（阻塞）
+call axn::screens.load_menu                       # 读档界面（阻塞）
+call axn::screens.save_menu (slots=15)            # 自定义存档槽数量
+```
+
+存档缩略图自动截取当前画面（如有 `checkpoint (thumbnail=current)` 则用 checkpoint 缩略图），显示日期、时间、章节名。
+
+**设置界面**：
+
+```apy
+call axn::screens.settings                        # 设置界面（阻塞）
+```
+
+自动覆盖所有 `preferences` 内置项（文字速度、音量、全屏、跳过模式等），自定义偏好项按类型渲染控件（`bool` → toggle，`float` → slider，`str` → dropdown）。
+
+**暂停菜单**：
+
+```apy
+call axn::screens.pause_menu
+```
+
+默认包含：继续游戏、存档、读档、设置、回到标题、退出。各按钮跳转目标可在 `options_window.apy` 中配置：
+
+```apy
+engine:
+    pause_menu:
+        show_save   = true
+        show_load   = true
+        show_title  = true
+        title_label = "main_title"    # 点击"回到标题"跳转的 label
+```
+
+**右键菜单**：
+
+鼠标右键 / 手柄 B 键呼出，默认内容：历史记录、自动模式、跳过、隐藏对话框、截图、设置。
+
+```apy
+# options_window.apy
+engine:
+    right_click_menu:
+        enabled  = true
+        items:
+            - history
+            - auto
+            - skip
+            - hide_window
+            - screenshot
+            - settings
+```
+
+**确认退出对话框**：
+
+```apy
+call axn::screens.confirm_quit         # 弹出"确定要退出吗？"，确认后 engine.quit()
+```
+
+**关于界面**：
+
+```apy
+call axn::screens.about (
+    title   = "游戏名称",
+    version = "1.0.0",
+    credits = "制作：...",
+    engine  = true         # 是否显示"Powered by Axn-Plus"
+)
+```
+
+所有标准界面的样式通过 `style` 系统覆盖，不需要修改模板文件本身。
+
+---
+
+#### 互动调试器（Interactive Director）
+
+开发模式专属工具，游戏运行时的实时演出调试，不依赖 Axn-Editor，通过键盘快捷键呼出。
+
+**呼出方式**：`Shift+D`（可在 `options_window.apy` 中重映射）。
+
+**功能：**
+
+- **立绘调整**：实时拖动当前场景中任意立绘的位置，调整后生成对应的 `show` 指令代码，可一键复制到剪贴板
+- **转场预览**：浏览并预览所有已注册的过渡效果（内置 + 自定义），选择后生成对应参数代码
+- **表情切换**：对当前可见角色实时切换表情（`states` / `layers` 均支持），生成对应 `expression` 指令
+- **Transform 预览**：对当前选中对象实时应用并预览 transform，调整 duration/easing，生成代码
+- **颜色矩阵预览**：实时预览 `color_matrix` 效果，滑块调整参数
+
+**生成代码格式**：所有调整操作在右侧面板实时显示等效 `.apy` 代码，可整体复制。
+
+**发布包中完全剥离**，不包含在包体内。
+
+---
+
+#### 自动化测试（Automated Testing）
+
+无头模式下模拟用户操作，自动跑通游戏流程，用于回归测试。
+
+**测试脚本格式**（`.axntest` 文件）：
+
+```
+# tests/basic_flow.axntest
+start at: start
+click                          # 模拟点击（推进对话）
+click 5                        # 连续点击 5 次
+choose: "答应她"               # 选择菜单选项（按文本匹配）
+choose index: 0                # 选择第一个选项
+wait label: route_a            # 等待执行流到达指定 label
+assert store: flag_agreed == True
+assert store: day >= 1
+assert label: morning_scene    # 断言当前在指定 label
+click until label: ch1_end     # 持续点击直到到达指定 label（有安全上限）
+screenshot: "tests/shots/ch1_end.png"   # 截图对比（与基准图对比，差异超阈值报错）
+```
+
+**运行方式**：
+
+```
+axn test tests/basic_flow.axntest          # 运行单个测试
+axn test tests/                            # 运行目录下所有测试
+axn test --headless tests/                 # 无头模式（不显示窗口）
+axn test --record tests/basic_flow.axntest # 录制模式：实际操作游戏，自动生成测试脚本
+```
+
+**录制模式**：开发者实际操作游戏，引擎记录所有点击和选择，自动生成 `.axntest` 文件，降低编写测试的成本。
+
+**截图对比**：首次运行时生成基准截图存入 `tests/baseline/`，后续运行时对比，像素差异超过阈值（默认 1%，可配置）时测试失败。
+
+**`options_window.apy` 配置**：
+
+```apy
+engine:
+    test:
+        screenshot_threshold = 0.01    # 截图对比差异阈值（0–1）
+        max_clicks           = 10000   # click until 的安全上限
+        timeout              = 300     # 单个测试超时秒数
 ```
 
 ---
