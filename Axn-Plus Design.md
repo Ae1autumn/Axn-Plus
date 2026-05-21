@@ -94,8 +94,8 @@ AxnParseError: Unclosed bracket in '$' line (line 12, scene.apy)
 # 顶层孤立注释，作为独立注释节点
 
 label morning_scene:
-    # 归属 morning_scene（父节点），不归属下面的 eileen 对话行
-    eileen: "早上好。"  # 归属此对话行（行内注释）
+    # 归属 morning_scene（父节点），不归属下面的 autumn 对话行
+    autumn: "早上好。"  # 归属此对话行（行内注释）
     sophia: "你好。"
 
 # 归属 morning_scene（父节点），空行切断与下方 scene 的联系
@@ -110,27 +110,27 @@ GUI 处理：节点移动时注释跟随；节点删除时若有关联注释则�
 ```apy
 # 角色定义（静态声明，内联）
 # define 默认推断类型为 char；显式声明可用 define char
-define eileen:
-    name "Eileen"
+define autumn:
+    name "autumn"
     color #ff8800
-    sprites "assets/eileen/"
-    voice_prefix "vo/eileen/"
+    sprites "assets/autumn/"
+    voice_prefix "vo/autumn/"
     default_expression "neutral"
-    side_image "ui/eileen_side.png"
+    side_image "ui/autumn_side.png"
     font "fonts/handwriting.ttf"
-    type_sound "sfx/type_eileen.ogg"
-    dialogue_box "ui/eileen_box.apy::EileenBox"
+    type_sound "sfx/type_autumn.ogg"
+    dialogue_box "ui/autumn_box.apy::autumnBox"
 
-define char eileen:   # 显式声明，等价于上方写法，意图更清晰
+define char autumn:   # 显式声明，等价于上方写法，意图更清晰
 
 # 角色继承：子角色继承父角色所有字段，显式声明的字段覆盖父定义
-define char eileen_adult extends eileen:
-    sprites "assets/eileen_adult/"
-    voice_prefix "vo/eileen_adult/"
+define char autumn_adult extends autumn:
+    sprites "assets/autumn_adult/"
+    voice_prefix "vo/autumn_adult/"
     # 未声明字段全部继承：name、color、dialogue_box 等保持不变
 
 # layers 模型下的继承：同名动态层内按 key 合并，未声明的状态继承父定义
-define char eileen_casual extends eileen:
+define char autumn_casual extends autumn:
     layers:
         outfit:
             casual "outfit_casual_v2.png"   # 只覆盖此状态
@@ -139,9 +139,9 @@ define char eileen_casual extends eileen:
 # 继承规则：
 # - 支持链式继承（A extends B extends C），但引擎启动时输出警告，可 ignore
 # - 链式继承字段展开顺序为从根到叶，子类覆盖父类；建议保持单层继承以维持可读性
-# - 继承只发生在编译期展开，运行时 eileen_adult 与 eileen 是完全独立的对象
-# - show eileen_adult 和 show eileen 互不影响
-# - 运行时修改 eileen 的层状态（表情、换装等），eileen_adult 完全不受影响，反之亦然
+# - 继承只发生在编译期展开，运行时 autumn_adult 与 autumn 是完全独立的对象
+# - show autumn_adult 和 show autumn 互不影响
+# - 运行时修改 autumn 的层状态（表情、换装等），autumn_adult 完全不受影响，反之亦然
 # - layers 模型下的 key 合并也发生在编译期，运行时两个角色的层状态互不共享
 
 # 分层立绘：states 和 layers 二选一，不可混用
@@ -155,9 +155,9 @@ define char sophia:
     default_expression "neutral"
 
 # layers：分层叠加模型
-define char eileen:
-    name "Eileen"
-    sprites "assets/eileen/"
+define char autumn:
+    name "autumn"
+    sprites "assets/autumn/"
     layers:
         body    "body_default.png"           # 静态层，不参与状态切换
         outfit:                              # 动态层，支持换装
@@ -182,14 +182,14 @@ define char eileen:
 
 # 响应式 triggers：角色可见时监听 store 变量，条件满足时自动触发动画
 # 只在角色可见时监听，hide 后自动暂停，show 后恢复
-define char eileen:
-    name "Eileen"
+define char autumn:
+    name "autumn"
     layers:
         ...
     triggers:
         when store["hp_ratio"] < 0.2:
             transform breathe_heavy             # 替换当前 transform
-        when store["relationship"]["eileen"] >= 80:
+        when store["relationship"]["autumn"] >= 80:
             transform += glow_soft              # 追加 transform，保留现有
         when store["day"] != store["prev_day"]:
             call animation day_change           # 触发 animation
@@ -201,24 +201,24 @@ define char eileen:
 # - 复杂条件退回 python: 块 + on key / on enter 手动处理
 
 # expression 指令：无对话时切换表情（states 和 layers 模型均支持）
-expression eileen happy                      # 走 expressions 映射（layers 模型）或整图切换（states 模型）
-expression eileen (face=happy, brow=angry)   # 直接指定各层，绕过 expressions 映射（仅 layers 模型）
-expression eileen (outfit=casual)            # 换装（仅 layers 模型）
-expression eileen happy (transition=dissolve) # 带过渡效果
+expression autumn happy                      # 走 expressions 映射（layers 模型）或整图切换（states 模型）
+expression autumn (face=happy, brow=angry)   # 直接指定各层，绕过 expressions 映射（仅 layers 模型）
+expression autumn (outfit=casual)            # 换装（仅 layers 模型）
+expression autumn happy (transition=dissolve) # 带过渡效果
 
 # 角色对话，表情作为行内修饰符；括号内支持裸关键字（布尔 flag）和具名参数
-eileen: "你好。" (happy)
-eileen: "今天天气不错。" (speed=0.5, voice="vo/001.ogg", nowait)
+autumn: "你好。" (happy)
+autumn: "今天天气不错。" (speed=0.5, voice="vo/001.ogg", nowait)
 # layers 模型下可直接指定各层（绕过 expressions 映射）
-eileen: "……" (face=happy, brow=angry)
-eileen: "换装了。" (outfit=casual)
+autumn: "……" (face=happy, brow=angry)
+autumn: "换装了。" (outfit=casual)
 # 表情状态跟着角色对象走，不跟场景走：
 # 对话修饰符修改角色的持久表情状态，与角色是否可见无关
 # show 出场时使用角色当前表情状态，不重置为 default_expression
 
 # voice 短路径：相对 voice_prefix 的短路径，引擎自动补全扩展名
-# 等价于 voice="vo/eileen/001.ogg"（假设 voice_prefix = "vo/eileen/"）
-eileen: "你好。" (voice="001")
+# 等价于 voice="vo/autumn/001.ogg"（假设 voice_prefix = "vo/autumn/"）
+autumn: "你好。" (voice="001")
 
 # 旁白（三种等价写法，风格自选，同一项目内保持一致）
 @ "阳光透过窗户照进来。"
@@ -227,37 +227,37 @@ narrator: "阳光透过窗户照进来。"     # 与角色行对齐，可读性�
 # 位置与可见性（show 不控制表情）
 # 指令结构：动词 [子命令] [位置参数...] (具名参数...)
 # show 位置参数顺序：角色 → 位置 → duration
-show eileen left                                        # 最简写法
-show eileen left 0.3                                    # 指定 duration
-show eileen left 0.3 (enter=slidein_left)               # 补全具名参数
-show eileen (layer=effect)                              # 显式指定层，默认为 sprite 层
+show autumn left                                        # 最简写法
+show autumn left 0.3                                    # 指定 duration
+show autumn left 0.3 (enter=slidein_left)               # 补全具名参数
+show autumn (layer=effect)                              # 显式指定层，默认为 sprite 层
 
 # 动画句柄：推荐用 handle= 具名参数（推荐写法）
-show eileen left 0.3 (enter=slidein_left, handle=anim_eileen)
+show autumn left 0.3 (enter=slidein_left, handle=anim_autumn)
 # 保留 as 句柄写法，但引擎警告，可 ignore
-show eileen left 0.3 (enter=slidein_left) as anim_eileen
+show autumn left 0.3 (enter=slidein_left) as anim_autumn
 
 # 多实例：同一角色同时出现在多个位置，用 alias= 命名独立实例
 # 不同实例的位置、表情、transform 状态完全独立，互不影响
-show eileen left (alias=left_eileen)
-show eileen right (alias=right_eileen)
-show eileen (transform=ghost, alias=ghost_eileen)
-hide left_eileen                    # 按 alias 名操作具体实例
-expression left_eileen happy        # 按 alias 名修改表情
-# 同样保留 as 写法但警告：show eileen left as left_eileen
+show autumn left (alias=left_autumn)
+show autumn right (alias=right_autumn)
+show autumn (transform=ghost, alias=ghost_autumn)
+hide left_autumn                    # 按 alias 名操作具体实例
+expression left_autumn happy        # 按 alias 名修改表情
+# 同样保留 as 写法但警告：show autumn left as left_autumn
 
 # hide 位置参数顺序：角色 → duration
-hide eileen                                             # 立即隐藏
-hide eileen 0.5                                         # 指定 duration
-hide eileen 0.5 (exit=fadeout)                          # 补全具名参数
+hide autumn                                             # 立即隐藏
+hide autumn 0.5                                         # 指定 duration
+hide autumn 0.5 (exit=fadeout)                          # 补全具名参数
 
 # 多角色并行：同行逗号分隔 = 并行执行，换行 = 串行执行
-show eileen left 0.3 (enter=slidein) as anim_eileen, sophia right 1.0 (enter=slideout) as anim_sophia
+show autumn left 0.3 (enter=slidein) as anim_autumn, sophia right 1.0 (enter=slideout) as anim_sophia
 
 # 等待控制
 wait                    # 等用户点击
 wait 2.0                # 等 2 秒
-wait for anim_eileen    # 等特定动画完成
+wait for anim_autumn    # 等特定动画完成
 wait for all            # 等所有动画完成（默认行为，显式写出意图更清晰）
 wait for any            # 等最先完成的动画
 
@@ -268,8 +268,8 @@ scene bg_room                           # 切换背景，默认清空 sprite 层
 scene bg_room 0.5                       # 指定 duration
 scene bg_room 0.5 (with=fade)           # 补全具名参数
 scene bg_room (keep)                    # 保留所有立绘
-scene bg_room (keep=eileen)             # 只保留 eileen，其余清除
-scene bg_room (keep=[eileen, sophia])   # 保留多个
+scene bg_room (keep=autumn)             # 只保留 autumn，其余清除
+scene bg_room (keep=[autumn, sophia])   # 保留多个
 
 # transition：全屏过渡，不切换任何内容（替代 Ren'Py 独立 with 语句的用途）
 # 位置参数顺序：过渡名 → duration
@@ -281,10 +281,10 @@ transition dissolve 0.5         # 全屏 dissolve
 
 # clear：精确清除，无过渡，不受 scene 影响
 clear                           # 清除 sprite 层所有元素
-clear eileen                    # 清除指定角色
-clear eileen sophia             # 清除多个
+clear autumn                    # 清除指定角色
+clear autumn sophia             # 清除多个
 clear (layer=effect)            # 清除指定层所有元素
-clear eileen (layer=effect)     # 清除指定层上的指定元素
+clear autumn (layer=effect)     # 清除指定层上的指定元素
 
 # 镜头控制（子命令结构）
 # camera move 位置参数顺序：zoom → duration → angle
@@ -339,9 +339,9 @@ pause until flag_ready              # 冻结，条件满足后推进
 pause (freeze_audio=False)          # 冻结画面和动画，音频继续
 
 # pause transform：单个 transform 暂停，保留进度
-show eileen (transform=breathe) as anim_eileen
-pause transform anim_eileen         # 暂停，保留当前帧进度
-resume transform anim_eileen        # 从暂停帧继续
+show autumn (transform=breathe) as anim_autumn
+pause transform anim_autumn         # 暂停，保留当前帧进度
+resume transform anim_autumn        # 从暂停帧继续
 
 # freeze / unfreeze：单个控件冻结（不响应输入）
 freeze hud_button                   # 单个控件冻结，自动应用 disabled 样式
@@ -361,8 +361,8 @@ stop video                                                          # 立即停�
 stop video 0.5                                                      # 带 fadeout
 
 # camera follow（镜头跟随角色）
-camera follow eileen                    # 跟随 eileen 的位置
-camera follow eileen (lag=0.3)          # 带延迟跟随，更自然
+camera follow autumn                    # 跟随 autumn 的位置
+camera follow autumn (lag=0.3)          # 带延迟跟随，更自然
 camera follow none                      # 取消跟随
 
 # 层管理
@@ -451,7 +451,7 @@ image "map/region_a.png" (cursor=hover, on_click: jump region_a)   # 引用 opti
 pass
 
 # 单行 Python（单行内 Python 语法合法即可）
-$ flag_met_eileen = True
+$ flag_met_autumn = True
 
 # 多行 Python
 python:
@@ -460,12 +460,12 @@ python:
 
 # while 循环（rollback= 必须显式声明，否则解析器报错）
 while hp > 0 (rollback=none):
-    eileen: "还没结束！"
+    autumn: "还没结束！"
     $ hp -= 10
 
 # for 循环（rollback= 必须显式声明）
 for item in inventory (rollback=none):
-    eileen: "我持有了{item.name}。"
+    autumn: "我持有了{item.name}。"
 
 # break / continue（仅在 while / for 块内有效）
 while True (rollback=none):
@@ -474,7 +474,7 @@ while True (rollback=none):
         break
     if hp > 80:
         continue
-    eileen: "还能撑住。"
+    autumn: "还能撑住。"
 
 # 不需要对话行的循环推荐退回 python: 块
 python:
@@ -483,10 +483,10 @@ python:
 
 # 标签（默认动态）；label 签名直接使用 Python 函数签名风格
 label morning_scene:
-    eileen: "早上好。" (smile)
+    autumn: "早上好。" (smile)
 
 label morning_scene(mood, weather="sunny"):
-    eileen: "早上好。"
+    autumn: "早上好。"
     return mood + "_done"   # return 后跟任意 Python 表达式
 
 # 局部 label：. 前缀，只在当前文件内可见，不进全局符号表
@@ -496,7 +496,7 @@ label chapter1_battle:
     jump .main_loop
 
 label .intro:              # 局部 label，只在声明所在文件内可见
-    eileen: "战斗开始！"
+    autumn: "战斗开始！"
     return
 
 label .main_loop:
@@ -506,7 +506,7 @@ label .main_loop:
     jump .main_loop
 
 label .ending:
-    eileen: "结束了。"
+    autumn: "结束了。"
     return
 
 # 跨文件访问局部 label：使用显式路径语法
@@ -521,15 +521,15 @@ call chapter1.apy::.intro       # 显式路径自然扩展，与现有跨文件�
 # - GUI 编辑器在脚本区以缩进或折叠形式展示局部 label，视觉上归属所在文件
 
 # 条件（支持 elif 链）
-if flag_met_eileen:
-    eileen: "好久不见。"
-elif flag_heard_of_eileen:
-    eileen: "久仰大名。"
+if flag_met_autumn:
+    autumn: "好久不见。"
+elif flag_heard_of_autumn:
+    autumn: "久仰大名。"
 else:
-    eileen: "初次见面。"
+    autumn: "初次见面。"
 
 # unless：if not 的语法糖，用于卫语句场景
-unless flag_met_eileen:
+unless flag_met_autumn:
     jump prologue
 
 # match：多路路由，匹配 store 变量的单一值
@@ -541,7 +541,7 @@ match day:
     _       -> ending
 
 # match 复杂形式（含表达式或 guard，整块降级为代码节点）
-match relationship["eileen"]:
+match relationship["autumn"]:
     case _ if _ >= 80:
         jump route_good
     case _:
@@ -554,7 +554,7 @@ menu (timeout=10.0, default="refuse"):
         jump route_a
     "拒绝" (id="refuse", if=flag_can_refuse):
         jump route_b
-    "询问详情" (id="ask", if=flag_met_eileen, disabled=flag_tired):
+    "询问详情" (id="ask", if=flag_met_autumn, disabled=flag_tired):
         jump route_c
     "隐藏选项" (id="secret", hidden=flag_secret):
         jump route_secret
@@ -563,7 +563,7 @@ menu (timeout=10.0, default="refuse"):
 menu:
     "答应她" (if=flag_can_agree) -> route_a
     "拒绝"                       -> route_b
-    "询问详情" (if=flag_met_eileen):   # 有额外逻辑时退回展开块
+    "询问详情" (if=flag_met_autumn):   # 有额外逻辑时退回展开块
         $ log_choice("ask")
         jump route_c
 
@@ -572,7 +572,7 @@ menu as answer:
     "是"  -> "yes"
     "否"  -> "no"
 
-eileen: "你选了 {answer}。"
+autumn: "你选了 {answer}。"
 
 # menu as 展开块：选项有前置逻辑时用 -> 显式 return
 menu as answer:
@@ -586,7 +586,7 @@ menu as answer:
 
 # with char：连续对话锁定角色和默认修饰符
 # 块内裸字符串自动归属当前角色；行级修饰符按槽位覆盖块级默认值（表情槽、具名参数槽、Flag 槽各自独立）
-with eileen (happy):
+with autumn (happy):
     "第一句。"
     "第二句。"
     "第三句。" (sad)          # 覆盖表情
@@ -608,7 +608,7 @@ call morning_scene() if day == 1
 return if flag_done
 
 # unless 对称写法（if not 的语法糖）
-jump prologue unless flag_met_eileen
+jump prologue unless flag_met_autumn
 return unless flag_can_continue
 
 # 不支持 call ... as result if ...（条件不满足时返回值语义不明），退回 if 块处理
@@ -707,13 +707,13 @@ const BG_ROOM = "assets/bg/room.png"          # 不进符号表，show $BG_ROOM 
 对话行内使用 `<tag>` 语法插入内联格式，与 `{expr}` 插值双轨并行，两者在 `TextRenderer` 层统一解析，互不冲突。
 
 ```apy
-eileen: "这个字<b>很重要</b>，<color=#ff0000>注意</color>。"
-eileen: "稍等……<w=1.5>好了。"           # 中途暂停 1.5 秒后继续
-eileen: "我叫<nw>"                       # 说完立刻推进，不等点击
-eileen: "<fast>直接显示完整文本。"        # 跳过打字机效果
-eileen: "音量<alpha=0.5>渐弱</alpha>的字。"
-eileen: "内联图标：<image=icon/heart.png>"
-eileen: "你好，{player_name}！"          # 插值保持不变，无冲突
+autumn: "这个字<b>很重要</b>，<color=#ff0000>注意</color>。"
+autumn: "稍等……<w=1.5>好了。"           # 中途暂停 1.5 秒后继续
+autumn: "我叫<nw>"                       # 说完立刻推进，不等点击
+autumn: "<fast>直接显示完整文本。"        # 跳过打字机效果
+autumn: "音量<alpha=0.5>渐弱</alpha>的字。"
+autumn: "内联图标：<image=icon/heart.png>"
+autumn: "你好，{player_name}！"          # 插值保持不变，无冲突
 ```
 
 **内置标签列表：**
@@ -748,7 +748,7 @@ eileen: "你好，{player_name}！"          # 插值保持不变，无冲突
 `<nw>` 行和 `<fast>` 行正常计入历史。若需要某行完全不计入：
 
 ```apy
-eileen: "这句话不会进历史记录。" (no_history)
+autumn: "这句话不会进历史记录。" (no_history)
 ```
 
 ---
@@ -759,7 +759,7 @@ eileen: "这句话不会进历史记录。" (no_history)
 
 ```apy
 label morning_scene (rollback=dialogue):    # 默认，只回滚对话显示状态
-    eileen: "早上好。"
+    autumn: "早上好。"
 
 label choice_scene (rollback=checkpoint):   # 回到最近 checkpoint 的完整状态
     menu:
@@ -875,7 +875,7 @@ engine:
 脚本层可显式标记不计入历史：
 
 ```apy
-eileen: "这句话不会进历史记录。" (no_history)
+autumn: "这句话不会进历史记录。" (no_history)
 ```
 
 ---
@@ -898,10 +898,10 @@ define char narrator_nvl:
 ```apy
 # nvl: 块 —— 块内所有对话累积显示（块内任意角色均走 NVL 路径，无论其 mode 声明）
 nvl:
-    eileen: "第一段话。"
+    autumn: "第一段话。"
     sophia: "第二段话，紧接在上面。"
     @ "旁白也可以参与。"
-    eileen: "继续累积。"
+    autumn: "继续累积。"
 
 nvl clear          # 清除 NVL 区域内的所有文本（不退出 NVL 模式）
 nvl hide           # 退出 NVL 模式，对话框恢复 ADV 布局
@@ -910,15 +910,15 @@ nvl hide           # 退出 NVL 模式，对话框恢复 ADV 布局
 **混用 ADV 和 NVL**：`nvl:` 块内走 NVL，块外走 ADV，同一 label 内可交替：
 
 ```apy
-eileen: "ADV 对话，正常替换显示。"
+autumn: "ADV 对话，正常替换显示。"
 
 nvl:
-    eileen: "进入 NVL，开始累积。"
+    autumn: "进入 NVL，开始累积。"
     @ "旁白段落。"
     sophia: "第三段。"
 
 nvl clear
-eileen: "NVL 清屏后回到 ADV。"
+autumn: "NVL 清屏后回到 ADV。"
 ```
 
 **修饰符**：NVL 块内对话行修饰符与 ADV 完全一致，支持表情、语音、`no_history`、`speed` 等。
@@ -948,8 +948,8 @@ engine:
 **角色声明**：
 
 ```apy
-define char eileen:
-    name "Eileen"
+define char autumn:
+    name "autumn"
     dialogue_mode "bubble"     # "box"（默认，固定位置对话框）/ "bubble"（气泡跟随立绘）
     bubble:
         anchor    "top"                    # 气泡附着方向：top / bottom / left / right
@@ -999,7 +999,7 @@ jump $target                              # 动态 jump
 静态版本保持不变，无歧义：
 
 ```apy
-show eileen center      # 静态，编译期确定
+show autumn center      # 静态，编译期确定
 jump morning_scene      # 静态，编译期确定
 ```
 
@@ -1045,8 +1045,8 @@ startup (after):            # 最晚执行，适合依赖其他模块的初始�
 对话字符串内用 `{expr}` 插入 `store` 变量或简单表达式，引擎在渲染时求值：
 
 ```apy
-eileen: "你好，{player_name}。今天是第 {day} 天。"
-eileen: "好感度：{relationship['eileen']}/100"
+autumn: "你好，{player_name}。今天是第 {day} 天。"
+autumn: "好感度：{relationship['autumn']}/100"
 ```
 
 插值表达式限制为单一表达式（变量、属性访问、下标、简单运算）。禁止函数调用和赋值——需要复杂计算时先用 `$` 块算好再引用。推断失败时抛出 `AxnInterpolationError`，指明文件位置和表达式内容。
@@ -1054,13 +1054,13 @@ eileen: "好感度：{relationship['eileen']}/100"
 **条件文本（inline conditional）**
 
 ```apy
-eileen: "我们[已经|还没]见过面。" (if=flag_met)
+autumn: "我们[已经|还没]见过面。" (if=flag_met)
 ```
 
 `[A|B]` 语法：`if` 条件为真取 A，否则取 B。省略 B 时条件为假则显示空字符串：
 
 ```apy
-eileen: "你[（有点憔悴）]看起来不错。" (if=flag_tired)
+autumn: "你[（有点憔悴）]看起来不错。" (if=flag_tired)
 ```
 
 `[A|B]` 仅支持静态字符串片段，不支持嵌套。需要复杂条件分支时用 `if` 块。
@@ -1069,11 +1069,11 @@ eileen: "你[（有点憔悴）]看起来不错。" (if=flag_tired)
 
 ```apy
 translate zh:
-    eileen: "你好。"
+    autumn: "你好。"
     @ "阳光透过窗户照进来。"
 
 translate en:
-    eileen: "Hello."
+    autumn: "Hello."
     @ "Sunlight streams through the window."
 ```
 
@@ -1101,7 +1101,7 @@ axn check-strings --lang en --input strings/en.apy
 
 translate en:
     # scene.apy::morning_scene, line 42
-    eileen: "Good morning."
+    autumn: "Good morning."
 
 translate en:
     # scene.apy::morning_scene, line 43
@@ -1119,23 +1119,23 @@ translate en:
 **具名动画序列（animation block）**
 
 ```apy
-animation eileen_enter:
-    show eileen right 0.0
+animation autumn_enter:
+    show autumn right 0.0
     camera move 1.1 0.5
     wait 0.3
-    show eileen center 0.4 (enter=slidein)
+    show autumn center 0.4 (enter=slidein)
 
-animation eileen_exit:
-    hide eileen 0.4 (exit=slideout)
+animation autumn_exit:
+    hide autumn 0.4 (exit=slideout)
     camera reset 0.3
 ```
 
 调用方式与 `call` 一致：
 
 ```apy
-call animation eileen_enter
-call animation eileen_enter (handle=anim)   # 用 handle= 接句柄，配合 wait for 使用
-call animation eileen_enter as anim         # 兼容写法，运行时警告可 ignore
+call animation autumn_enter
+call animation autumn_enter (handle=anim)   # 用 handle= 接句柄，配合 wait for 使用
+call animation autumn_enter as anim         # 兼容写法，运行时警告可 ignore
 ```
 
 `handle=anim` 得到的是 `AnimationHandle` 对象，只暴露以下接口：
@@ -1167,9 +1167,9 @@ animation char_exit(char, duration=0.3):
 调用时传入参数：
 
 ```apy
-call animation char_enter(eileen, "left")
-call animation char_enter(eileen, "left") (handle=anim)
-call animation char_enter(eileen)          # 使用默认参数
+call animation char_enter(autumn, "left")
+call animation char_enter(autumn, "left") (handle=anim)
+call animation char_enter(autumn)          # 使用默认参数
 ```
 
 参数类型限制：只允许角色名、位置关键字、数值、字符串字面量，不允许传入 Python 表达式，也不允许 `$` 前缀的动态变量——`animation` 块内不允许 Python，参数必须在编译期完全确定，保证 GUI 能完整解析调用点。调用点传入 `$` 前缀参数时解析期报错，需要动态参数时退回 `label` + Python 块处理。
@@ -1209,7 +1209,7 @@ animation boss_enter:
 # 调用方
 call animation boss_enter (handle=anim_boss)
 # animation 暂停在 yield，调用方继续向下执行
-eileen: "它来了！"
+autumn: "它来了！"
 sophia: "快跑！"
 resume animation anim_boss      # 手动恢复，camera shake + roar 在这里触发
 ```
@@ -1264,12 +1264,12 @@ AxnWarning: Save rejected: an unconditional 'animation loop' is running.
 
 **`show` 不阻塞执行流**
 
-`show eileen center (transform=shake_x)` 之后立即推进到下一行，transform 在后台运行，对话行不等 transform 完成。需要等待时显式使用 `as` + `wait for`：
+`show autumn center (transform=shake_x)` 之后立即推进到下一行，transform 在后台运行，对话行不等 transform 完成。需要等待时显式使用 `as` + `wait for`：
 
 ```apy
-show eileen center (transform=shake_x) as anim_shake   # 单行 show + as，合法
+show autumn center (transform=shake_x) as anim_shake   # 单行 show + as，合法
 wait for anim_shake
-eileen: "你好。"    # shake_x 完成后才显示对话
+autumn: "你好。"    # shake_x 完成后才显示对话
 ```
 
 不等待时 transform 跑着，对话同时出现，两者互不阻塞。`as` 在单行 `show` 上与并行写法上均有效。
@@ -1282,8 +1282,8 @@ eileen: "你好。"    # shake_x 完成后才显示对话
 - **后台动画**：`repeat forever` / `repeat forever pingpong`，不参与 `wait for all`，持续运行直到对象被 `hide` 或显式 `transform=none`
 
 ```apy
-animation eileen_enter:
-    show eileen center (transform=[complex_enter, breathe])
+animation autumn_enter:
+    show autumn center (transform=[complex_enter, breathe])
     # complex_enter: repeat 1       → 前台，参与等待
     # breathe:       repeat forever → 后台，不参与等待
     wait for all    # 等 complex_enter 完成即推进，breathe 继续跑
@@ -1294,7 +1294,7 @@ animation eileen_enter:
 ```
 AxnWarning: 'wait for all' has no finite transforms to wait for.
   All transforms are 'repeat forever'. Did you mean to use 'wait'?
-  Line 3, eileen_enter animation block.
+  Line 3, autumn_enter animation block.
 ```
 
 **`transform` 归属对象，不归属 track**
@@ -1311,8 +1311,8 @@ AxnWarning: 'wait for all' has no finite transforms to wait for.
 ```apy
 parallel:
     track dialogue (interactive):   # 交互轨道，可以有对话行，独占输入
-        show eileen left 0.5
-        eileen: "……"                 # 正常等待点击
+        show autumn left 0.5
+        autumn: "……"                 # 正常等待点击
         sophia: "是啊。"
     track bgm:                      # 非交互轨道，只允许引擎指令
         play music "bgm/tense.ogg" 0.8 1.0
@@ -1338,12 +1338,12 @@ parallel (wait=any):
 ```apy
 parallel (wait=none):           # 不自动等待，手动控制
     track dialogue (interactive):
-        eileen: "第一句"
-        eileen: "第二句"
+        autumn: "第一句"
+        autumn: "第二句"
     track bgm:
         play music "bgm/tense.ogg" 0.8 1.0
     track scene as anim_scene:
-        show eileen left 0.5
+        show autumn left 0.5
         camera shake 5 0.3
 
 wait for anim_scene             # 等 scene track 完成后推进
@@ -1359,26 +1359,26 @@ wait for dialogue               # 等 interactive track 完成后推进
 同一角色的不同表情、服装变体通过 `states` 声明管理。引擎默认按 `{角色名}_{state}.png` 命名约定自动扫描 `sprites` 目录，也可以显式声明覆盖：
 
 ```apy
-define char eileen:
-    sprites "assets/eileen/"       # 自动扫描，按命名约定构建状态表
+define char autumn:
+    sprites "assets/autumn/"       # 自动扫描，按命名约定构建状态表
     states:                        # 显式声明，覆盖自动扫描结果
-        neutral    "assets/eileen/neutral.png"
-        happy      "assets/eileen/happy.png"
-        sad        "assets/eileen/sad.png"
-        happy_alt  "assets/eileen/casual_happy.png"   # 服装变体
+        neutral    "assets/autumn/neutral.png"
+        happy      "assets/autumn/happy.png"
+        sad        "assets/autumn/sad.png"
+        happy_alt  "assets/autumn/casual_happy.png"   # 服装变体
 ```
 
 状态切换通过对话修饰符触发，是瞬时换帧，不产生过渡动画：
 
 ```apy
-eileen: "早上好！" (happy)     # 切换到 happy state
-eileen: "……"     (sad)        # 切换到 sad state
+autumn: "早上好！" (happy)     # 切换到 happy state
+autumn: "……"     (sad)        # 切换到 sad state
 ```
 
 需要带过渡的状态切换时，在修饰符内指定 `transition`：
 
 ```apy
-eileen: "……" (sad, transition=dissolve)
+autumn: "……" (sad, transition=dissolve)
 ```
 
 **过渡（transition）**
@@ -1386,8 +1386,8 @@ eileen: "……" (sad, transition=dissolve)
 过渡作用于出入场和场景切换，使用已有的具名参数语法触发：
 
 ```apy
-show eileen left 0.3 (enter=fade)
-hide eileen 0.5 (exit=dissolve)
+show autumn left 0.3 (enter=fade)
+hide autumn 0.5 (exit=dissolve)
 scene bg_room 0.5 (with=wipe)
 ```
 
@@ -1405,7 +1405,7 @@ class SlideFromTop(Transition):
 ```
 
 ```apy
-show eileen center (enter=SlideFromTop(0.3))   # 直接传实例
+show autumn center (enter=SlideFromTop(0.3))   # 直接传实例
 ```
 
 **transform（对象属性动画）**
@@ -1517,8 +1517,8 @@ startup:
 使用时与内置标签语法完全一致：
 
 ```apy
-eileen: "这个字<shake>在颤抖</shake>。"
-eileen: "发光的<glow color=#ff8800>文字</glow>。"
+autumn: "这个字<shake>在颤抖</shake>。"
+autumn: "发光的<glow color=#ff8800>文字</glow>。"
 ```
 
 `TextRenderer.register_tag(name, handler)` 中 `handler` 接收 `(content: list, args: dict)` 并返回渲染效果对象，继承 `TextEffect` 抽象类。自定义标签与内置标签优先级相同，同名时自定义标签覆盖内置标签并输出警告。
@@ -1588,9 +1588,9 @@ transform nudge_right:
 **应用 transform：**
 
 ```apy
-show eileen center (transform=shake_x)                              # 单个
-show eileen center (transform=[breathe, shake_x])                   # 多个并行叠加
-show eileen center (transform=shake_x(duration=0.2))               # 覆盖 duration
+show autumn center (transform=shake_x)                              # 单个
+show autumn center (transform=[breathe, shake_x])                   # 多个并行叠加
+show autumn center (transform=shake_x(duration=0.2))               # 覆盖 duration
 ```
 
 `compose=sequence` 保留但警告，推荐改用 `then` 链式写法：
@@ -1609,22 +1609,22 @@ AxnWarning: [transform] 'compose=sequence' is deprecated. Use 'then' chain inste
 
 **触发与停止模型：**
 
-新的 `show eileen (transform=X)` 替换当前所有 transform，不叠加。需要追加时使用 `transform+=`：
+新的 `show autumn (transform=X)` 替换当前所有 transform，不叠加。需要追加时使用 `transform+=`：
 
 ```apy
-show eileen (transform=breathe)       # 启动 breathe
-show eileen (transform=shake_x)       # 停止 breathe，启动 shake_x
-show eileen (transform+=shake_x)      # 在现有基础上追加 shake_x
-show eileen (transform=none)          # 显式停止所有 transform
+show autumn (transform=breathe)       # 启动 breathe
+show autumn (transform=shake_x)       # 停止 breathe，启动 shake_x
+show autumn (transform+=shake_x)      # 在现有基础上追加 shake_x
+show autumn (transform=none)          # 显式停止所有 transform
 ```
 
 | 事件 | 行为 |
 |---|---|
-| `hide eileen` | 立即停止所有附属 transform |
-| `show eileen`（无 transform 参数） | 保留当前 transform，不中断（移动位置不打断循环动画） |
-| `show eileen (transform=X)` | 替换全部 transform |
-| `show eileen (transform+=X)` | 追加，保留现有 transform |
-| `show eileen (transform=none)` | 显式停止所有 transform |
+| `hide autumn` | 立即停止所有附属 transform |
+| `show autumn`（无 transform 参数） | 保留当前 transform，不中断（移动位置不打断循环动画） |
+| `show autumn (transform=X)` | 替换全部 transform |
+| `show autumn (transform+=X)` | 追加，保留现有 transform |
+| `show autumn (transform=none)` | 显式停止所有 transform |
 | `repeat 1` 动画自然结束 | 停止该 transform，不影响其他 |
 
 **复杂动画退到 Python：**
@@ -1663,7 +1663,7 @@ class LivePortrait(AnimatedSprite):
 ```
 
 ```apy
-show LivePortrait(eileen) center
+show LivePortrait(autumn) center
 ```
 
 `AnimatedSprite` 的生命周期钩子与 `@restorable` 接口统一——`on_snapshot` / `on_restore` 即 `__snapshot__` / `__restore__` 的别名，两种写法均可，引擎内部统一处理。
@@ -1676,8 +1676,8 @@ show LivePortrait(eileen) center
 两者组合使用：
 
 ```apy
-animation eileen_enter:
-    show eileen right 0.0 (transform=complex_enter)
+animation autumn_enter:
+    show autumn right 0.0 (transform=complex_enter)
     camera move 1.1 0.5
     wait for all
 ```
@@ -1693,26 +1693,26 @@ animation eileen_enter:
 **内置颜色矩阵：**
 
 ```apy
-show eileen (color_matrix=grayscale)                  # 去色
-show eileen (color_matrix=SaturationMatrix(0.3))      # 降低饱和度
-show eileen (color_matrix=TintMatrix(#8888ff, 0.4))   # 蓝调叠色（color, strength）
-show eileen (color_matrix=BrightnessMatrix(-0.2))     # 降低亮度（-1.0–1.0）
-show eileen (color_matrix=ContrastMatrix(1.5))        # 提高对比度
-show eileen (color_matrix=InvertMatrix)               # 颜色反相
-show eileen (color_matrix=none)                       # 清除
+show autumn (color_matrix=grayscale)                  # 去色
+show autumn (color_matrix=SaturationMatrix(0.3))      # 降低饱和度
+show autumn (color_matrix=TintMatrix(#8888ff, 0.4))   # 蓝调叠色（color, strength）
+show autumn (color_matrix=BrightnessMatrix(-0.2))     # 降低亮度（-1.0–1.0）
+show autumn (color_matrix=ContrastMatrix(1.5))        # 提高对比度
+show autumn (color_matrix=InvertMatrix)               # 颜色反相
+show autumn (color_matrix=none)                       # 清除
 ```
 
 **与 `transform` 的结合：**
 
 ```apy
-show eileen (transform=breathe, color_matrix=TintMatrix(#ff8888, 0.3))
+show autumn (transform=breathe, color_matrix=TintMatrix(#ff8888, 0.3))
 # transform 和 color_matrix 独立管理，互不覆盖
 ```
 
 **`color_matrix` 不属于 `transform` 属性**：它是独立的后处理步骤，不参与 keyframe 插值，不受 `transform` 的 `repeat` / `mode` 逻辑影响。需要动画化颜色变化时（如角色受击闪红）使用 `transition_matrix` 参数：
 
 ```apy
-show eileen (color_matrix=TintMatrix(#ff0000, 0.8), transition_matrix=0.1)
+show autumn (color_matrix=TintMatrix(#ff0000, 0.8), transition_matrix=0.1)
 # 0.1 秒内从当前 color_matrix 过渡到新值
 ```
 
@@ -1741,7 +1741,7 @@ class NightMatrix(ColorMatrix):
 ```
 
 ```apy
-show eileen (color_matrix=NightMatrix(0.8))
+show autumn (color_matrix=NightMatrix(0.8))
 layer color_matrix bg NightMatrix(0.6)
 ```
 
@@ -1773,10 +1773,10 @@ layer transform sprite (transform=none)
 
 ```apy
 with store:
-    flag_met_eileen = True
+    flag_met_autumn = True
     day += 1
     relationship = new_rel      # ✅ 整体替换顶层变量
-    # relationship["eileen"] += 5  ← 解析期报错，改用 python: 块先算好再赋值
+    # relationship["autumn"] += 5  ← 解析期报错，改用 python: 块先算好再赋值
 ```
 
 提供真正的原子语义：执行前对所有涉及的顶层 key 做快照，中途抛出异常时自动回滚，保证状态变更要么全部完成、要么完全不发生。
@@ -1786,7 +1786,7 @@ with store:
 ```
 AxnParseError: 'with store' only allows top-level store assignments.
   Use a 'python:' block for nested mutations, then assign the result.
-  12 | relationship["eileen"] += 5
+  12 | relationship["autumn"] += 5
 ```
 
 需要批量修改 `dict` 子项时，先在 `python:` 块里算好新值，再用 `with store` 整体赋值：
@@ -1794,7 +1794,7 @@ AxnParseError: 'with store' only allows top-level store assignments.
 ```apy
 python:
     new_rel = dict(relationship)
-    new_rel["eileen"] += 5
+    new_rel["autumn"] += 5
 
 with store:
     relationship = new_rel
@@ -1832,7 +1832,7 @@ const ROUTES = ["a", "b", "c"]
 
 ```apy
 flag:
-    met_eileen = False
+    met_autumn = False
     agreed = False
     can_refuse = True
 ```
@@ -1848,7 +1848,7 @@ flag:
 专门用于修改 `flag` 块声明的变量，使 GUI 能建立声明与赋值之间的归属关系：
 
 ```apy
-set met_eileen = True
+set met_autumn = True
 set agreed = False
 set can_refuse = some_func()    # 右值复杂时，GUI 降级为代码节点，但归属关系保留
 ```
@@ -1869,7 +1869,7 @@ set can_refuse = some_func()    # 右值复杂时，GUI 降级为代码节点，
 label chapter2_start:
     checkpoint "第二章·清晨"
     scene bg_morning
-    eileen: "新的一天。"
+    autumn: "新的一天。"
 ```
 
 支持具名参数扩展：
@@ -1885,8 +1885,8 @@ GUI 脚本区对应存档点积木块，章节结构一眼可见。
 开发期用于验证游戏状态，发行版自动剥离：
 
 ```apy
-assert flag_met_eileen, "进入此路由前必须已见过 eileen"
-assert relationship["eileen"] >= 0, f"好感度不能为负：{relationship['eileen']}"
+assert flag_met_autumn, "进入此路由前必须已见过 autumn"
+assert relationship["autumn"] >= 0, f"好感度不能为负：{relationship['autumn']}"
 ```
 
 语义与 Python `assert` 完全一致。引擎在 debug 模式下执行，release 模式跳过，不产生任何运行时开销。
@@ -1940,11 +1940,11 @@ template BaseBox:
 ```
 
 ```apy
-# ui/eileen_box.apy
+# ui/autumn_box.apy
 import "ui/base.apy"
 
-EileenBox extends BaseBox:
-    background "ui/box_eileen.png"
+autumnBox extends BaseBox:
+    background "ui/box_autumn.png"
     name_color #ff8800
     font "fonts/handwriting.ttf"
 ```
@@ -1977,12 +1977,12 @@ expoint = "after_prologue" (type=script)    # 默认，允许任意脚本内容
 
 # 定义（填充内容，可在任意 .apy 文件中定义，包括外部注入文件）
 expoint after_prologue:
-    eileen: "这是DLC注入的额外对话。"
+    autumn: "这是DLC注入的额外对话。"
     $ dlc_flag = True
 
 # 覆盖定义（replace 语义，不触发多次定义警告）
 expoint after_prologue (replace):
-    eileen: "覆盖后的内容。"
+    autumn: "覆盖后的内容。"
 
 # 调用（主流程中的注入点，未定义时静默跳过）
 expoint after_prologue
@@ -2138,8 +2138,8 @@ expoint after_prologue
 | `dyn` | `define`、`label` | 显式声明为动态，运行时求值 |
 
 ```apy
-define eileen:        # 静态（默认，无需标记）
-dyn define eileen:    # 动态，运行时求值
+define autumn:        # 静态（默认，无需标记）
+dyn define autumn:    # 动态，运行时求值
 
 label morning_scene:      # 动态（默认）
 sta label morning_scene:  # 强制静态，非默认行为，显式标记
@@ -2180,11 +2180,11 @@ camera move _ 0.5            # 错误：不支持占位符，改用具名写法
 **`show` 位置约束**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=` 传入，与 duration（数字类型）不产生歧义。duration 必须跟在位置关键字之后——数字直接跟在角色名后面（没有前置位置关键字）时，引擎运行时输出警告并降级处理为 duration，保持当前位置，可 ignore；需要指定 duration 但不改变位置时，推荐使用 `(duration=0.3)` 具名参数。连续两次 `show` 同一角色且位置相同、第二次没有 duration 时，引擎输出警告（可能是漏写），可 ignore。
 
 ```apy
-show eileen left 0.3                 # 合法：关键字位置 + duration
-show eileen (pos=(100, 200))         # 合法：数值坐标，具名参数
-show eileen 0.3 (pos=(100, 200))     # 合法：duration + 数值坐标（duration 不依赖位置关键字，走具名 duration 槽）
-show eileen (duration=0.3)           # 合法：保持当前位置，只指定 duration
-show eileen 0.3                      # AxnWarning：数字直接跟在角色名后，位置关键字缺失
+show autumn left 0.3                 # 合法：关键字位置 + duration
+show autumn (pos=(100, 200))         # 合法：数值坐标，具名参数
+show autumn 0.3 (pos=(100, 200))     # 合法：duration + 数值坐标（duration 不依赖位置关键字，走具名 duration 槽）
+show autumn (duration=0.3)           # 合法：保持当前位置，只指定 duration
+show autumn 0.3                      # AxnWarning：数字直接跟在角色名后，位置关键字缺失
                                      # 降级处理：duration=0.3，保持当前位置
 ```
 
@@ -2193,7 +2193,7 @@ AxnWarning: [parser] Number directly follows character name in 'show' without po
   Treating as duration=0.3, keeping current position.
   → scene.apy, line 8
 
-Hint: Use 'show eileen (duration=0.3)' to make intent explicit.
+Hint: Use 'show autumn (duration=0.3)' to make intent explicit.
 ```
 
 **子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
@@ -2305,11 +2305,11 @@ Hint: Use 'show eileen (duration=0.3)' to make intent explicit.
 
 **并行与串行执行**：同行逗号分隔的指令并行执行，引擎默认等所有并行动画完成后推进。需要精细控制等待时机时，用 `as` 给动画命名，再用 `wait for` 显式控制。`wait for` 中 `for` 是介词而非子命令，`wait for all` / `wait for any` / `wait for <name>` 三种形式语义链完整。
 
-**`scene` 默认清空 sprite 层**：`scene` 切换背景时默认同时清空 sprite 层（高频用法零开销）。需要保留立绘时显式使用 `(keep)` 或 `(keep=角色名)` 具名参数；`(keep=[eileen, sophia])` 支持保留多个。`scene` 只清非持久层，持久层（如 `ui`）完全不受影响。
+**`scene` 默认清空 sprite 层**：`scene` 切换背景时默认同时清空 sprite 层（高频用法零开销）。需要保留立绘时显式使用 `(keep)` 或 `(keep=角色名)` 具名参数；`(keep=[autumn, sophia])` 支持保留多个。`scene` 只清非持久层，持久层（如 `ui`）完全不受影响。
 
-**`clear` 指令**：精确清除，无过渡，定位是"批量/精确移除"而非"退场"。支持指定角色（`clear eileen`）、多个角色（`clear eileen sophia`）、指定层（`clear (layer=effect)`）、指定层上的指定元素（`clear eileen (layer=effect)`）。无参数时清除 sprite 层所有元素。`clear` 不支持过渡动画，需要过渡退场时使用 `hide`。`clear` 可以显式清除持久层，但需要明确指定 `layer=`，不会误伤持久层。
+**`clear` 指令**：精确清除，无过渡，定位是"批量/精确移除"而非"退场"。支持指定角色（`clear autumn`）、多个角色（`clear autumn sophia`）、指定层（`clear (layer=effect)`）、指定层上的指定元素（`clear autumn (layer=effect)`）。无参数时清除 sprite 层所有元素。`clear` 不支持过渡动画，需要过渡退场时使用 `hide`。`clear` 可以显式清除持久层，但需要明确指定 `layer=`，不会误伤持久层。
 
-**`hide` 与 `clear` 的语义区别**：`hide eileen 0.5 (exit=fadeout)` 隐藏单个角色，支持过渡动画，强调"退场"；`clear eileen` 立即移除，无过渡，强调"清除"。需要过渡时用 `hide`，需要批量或精确无过渡移除时用 `clear`。
+**`hide` 与 `clear` 的语义区别**：`hide autumn 0.5 (exit=fadeout)` 隐藏单个角色，支持过渡动画，强调"退场"；`clear autumn` 立即移除，无过渡，强调"清除"。需要过渡时用 `hide`，需要批量或精确无过渡移除时用 `clear`。
 
 **`call` 返回值**：只支持 `as` 写法——`call label() as result`。`_return` 作为引擎内部实现细节，不对外暴露。
 
@@ -2319,7 +2319,7 @@ Hint: Use 'show eileen (duration=0.3)' to make intent explicit.
 
 **局部 label（`.` 前缀）**：`.` 前缀声明的 label 只在声明所在文件内可见，不写入全局符号表，不参与全局冲突检测。适合模块内部跳转点（`.intro`、`.main_loop`、`.ending` 等），避免通用名污染全局命名空间。不同文件可以有同名局部 label，互不冲突。同文件内直接用 `.前缀名` 调用；跨文件访问使用显式路径 `文件名::.label名`，与现有跨文件引用语法一致。Parser 第一遍扫描时识别 `.` 前缀，局部 label 不进第一遍收集的全局名字集合。GUI 编辑器以缩进或折叠形式展示局部 label，视觉上归属所在文件，与全局 label 视觉区分。
 
-**UI 控件定义**：在独立的 `.apy` 文件中定义，通过 `文件路径::控件名` 语法引用，如 `"ui/eileen_box.apy::EileenBox"`。
+**UI 控件定义**：在独立的 `.apy` 文件中定义，通过 `文件路径::控件名` 语法引用，如 `"ui/autumn_box.apy::autumnBox"`。
 
 **推断失败行为**：所有默认推断逻辑（层级推断、类型推断等）在推断失败时抛出明确错误，不静默走错分支。
 
@@ -2333,7 +2333,7 @@ Hint: Use 'show eileen (duration=0.3)' to make intent explicit.
 
 **transform 叠加冲突**：`compose=parallel`（默认）时属性冲突取列表最后一个，不做混合，引擎启动时输出警告。`compose=sequence` 已废弃，保留但运行时警告，推荐改用 `then` 链式写法。
 
-**transform 触发与停止**：`show eileen (transform=X)` 替换全部现有 transform；`show eileen` 无 transform 参数时保留当前 transform（移动位置不打断循环动画）；`transform+=X` 追加；`transform=none` 显式停止所有；`hide` 时自动停止所有附属 transform。
+**transform 触发与停止**：`show autumn (transform=X)` 替换全部现有 transform；`show autumn` 无 transform 参数时保留当前 transform（移动位置不打断循环动画）；`transform+=X` 追加；`transform=none` 显式停止所有；`hide` 时自动停止所有附属 transform。
 
 **transform `then` 链式串行**：在 `transform` 块内用 `then` 声明串行后续动画，替代已废弃的 `compose=sequence`。`then` 之前的 transform 必须为有限动画（`repeat 1` / `repeat N`），否则解析期报错。
 
@@ -2414,7 +2414,7 @@ class CharacterDisplay(AnimatedSprite):   # 纯显示状态，不进 store
 **`with char` 块**：块内裸字符串自动归属当前角色，修饰符继承块级声明。行级修饰符按**槽位覆盖**块级默认值——修饰符分为表情槽、具名参数槽、Flag 槽三类，行级只覆盖显式指定的槽位，未指定的槽位继承块级默认值。适合连续独白场景，不适合多角色交叉对话。
 
 ```apy
-with eileen (happy, speed=1.0):
+with autumn (happy, speed=1.0):
     "第一句。"                    # 表情=happy, speed=1.0
     "第二句。" (sad)              # 表情=sad,   speed=1.0  ← 只覆盖表情槽
     "第三句。" (speed=0.5)        # 表情=happy, speed=0.5  ← 只覆盖 speed 槽
@@ -2430,8 +2430,8 @@ with eileen (happy, speed=1.0):
 DLC / `mount_archive` 场景下，后挂载的归档引入新语音文件时，查找表支持增量合并（主表 + 归档补丁表分层查找），不覆盖主表。
 
 ```apy
-define eileen:
-    voice_prefix "vo/eileen/"
+define autumn:
+    voice_prefix "vo/autumn/"
     voice_ext ".ogg"        # 可选；显式指定跳过扫描，性能更好；不填时按优先级自动推断
 ```
 
@@ -2456,7 +2456,7 @@ AxnWarning: [save] Store variable 'old_flag' exists in save but is not declared 
 
 ```apy
 flag:
-    met_eileen: bool = False   # 有类型注解，存档时验证
+    met_autumn: bool = False   # 有类型注解，存档时验证
     day: int = 1
     player_name: str = ""
     relationship: dict = {}
@@ -2525,7 +2525,7 @@ input disable:
 
 **分层立绘**：角色立绘支持两种模型，二选一，同一 `define` 块内不可混用，混用时引擎启动报错。`states` 模型：整图切换，每个状态对应一张完整立绘图片。`layers` 模型：多图层叠加，静态层（单文件）不参与状态切换，动态层（有子状态列表）通过修饰符切换；`expressions` 映射将一个修饰符名映射到多个动态层的组合状态，`expressions` 映射必须覆盖所有动态层，漏写时引擎启动报错。图层叠加顺序：要么全部走声明顺序，要么全部写 `z_order`，不允许混用，混用时引擎启动报错。
 
-**`expression` 指令**：无对话时切换表情的专用指令，`show` 不承担此职责。`states` 模型下 `expression eileen happy` 整图切换；`layers` 模型下走 `expressions` 映射。`layers` 模型支持直接指定各层（`expression eileen (face=happy, brow=angry)`）绕过映射，也支持换装（`expression eileen (outfit=casual)`）。可选 `transition` 具名参数控制过渡效果。两套模型下用户侧语法完全一致，差异由引擎内部按角色声明类型分派。
+**`expression` 指令**：无对话时切换表情的专用指令，`show` 不承担此职责。`states` 模型下 `expression autumn happy` 整图切换；`layers` 模型下走 `expressions` 映射。`layers` 模型支持直接指定各层（`expression autumn (face=happy, brow=angry)`）绕过映射，也支持换装（`expression autumn (outfit=casual)`）。可选 `transition` 具名参数控制过渡效果。两套模型下用户侧语法完全一致，差异由引擎内部按角色声明类型分派。
 
 **`menu as` 返回值**：`menu as result` 选完后继续当前执行流，选项 `->` 右侧为返回值表达式而非 label 名。`menu as` 内不允许 `jump`，混用时解析器报错。需要前置逻辑时用展开块 + 显式 `->` 返回。GUI 对应独立的"菜单返回值"节点，与跳转型菜单节点分开，不混用。
 
@@ -2693,8 +2693,8 @@ startup:
 注册后支持裸名字引用和参数化调用：
 
 ```apy
-show eileen (enter=slide_from_top)           # 裸名字，使用 __init__ 默认参数
-show eileen (enter=slide_from_top(0.3))      # 带参数，等价于 SlideFromTop(0.3)
+show autumn (enter=slide_from_top)           # 裸名字，使用 __init__ 默认参数
+show autumn (enter=slide_from_top(0.3))      # 带参数，等价于 SlideFromTop(0.3)
 scene bg_room (with=glitch_in(speed=2.0))
 ```
 
@@ -2821,14 +2821,14 @@ gui inventory_item(item):
 **`<shader>` 标签**
 
 ```apy
-eileen: "这是<shader=gradient(#ff8800, #ffffff)>渐变文字</shader>。"
-eileen: "这是<shader=outline(color=#000000, width=2)>描边文字</shader>。"
-eileen: "这是<shader=glow(color=#ff8800, radius=4)>发光文字</shader>。"
-eileen: "这是<shader=wave(amplitude=3, speed=2.0)>波浪文字</shader>。"
-eileen: "这是<shader=shadow(color=#00000088, offset=(2,2))>阴影文字</shader>。"
+autumn: "这是<shader=gradient(#ff8800, #ffffff)>渐变文字</shader>。"
+autumn: "这是<shader=outline(color=#000000, width=2)>描边文字</shader>。"
+autumn: "这是<shader=glow(color=#ff8800, radius=4)>发光文字</shader>。"
+autumn: "这是<shader=wave(amplitude=3, speed=2.0)>波浪文字</shader>。"
+autumn: "这是<shader=shadow(color=#00000088, offset=(2,2))>阴影文字</shader>。"
 
 # 组合多个效果
-eileen: "这是<shader=[outline(#000000, 2), glow(#ff8800, 4)]>组合效果</shader>。"
+autumn: "这是<shader=[outline(#000000, 2), glow(#ff8800, 4)]>组合效果</shader>。"
 ```
 
 **style 系统集成**
@@ -2844,7 +2844,7 @@ style title_text:
     shader: outline(#000000, width=3)
     font_size 32
 
-eileen: "重要台词" (style=glitch_text)
+autumn: "重要台词" (style=glitch_text)
 text "游戏标题" (style=title_text)
 ```
 
@@ -2892,7 +2892,7 @@ startup:
     python:
         TextShaderLibrary.register("rainbow", RainbowShader)
 
-eileen: "彩虹<shader=rainbow(speed=2.0)>文字</shader>出现了。"
+autumn: "彩虹<shader=rainbow(speed=2.0)>文字</shader>出现了。"
 ```
 
 ---
@@ -2903,11 +2903,11 @@ eileen: "彩虹<shader=rainbow(speed=2.0)>文字</shader>出现了。"
 
 ```apy
 together:
-    eileen: "我们一起说！"
+    autumn: "我们一起说！"
     sophia: "我们一起说！"
 
 together:
-    eileen: "我说我的。" (happy)
+    autumn: "我说我的。" (happy)
     sophia: "我说我的。" (sad)
     @ "两人同时开口。"          # 旁白也可以参与
 ```
@@ -2918,15 +2918,15 @@ together:
 
 ```apy
 together (line="<nw>|<w>"):
-    eileen: "第一句。"    # 应用 <nw>，说完立即推进不等点击
+    autumn: "第一句。"    # 应用 <nw>，说完立即推进不等点击
     sophia: "第二句。"    # 应用 <w>，中途暂停等点击后继续
 
 together (line="<fast>"):
-    eileen: "整块都快速显示。"
+    autumn: "整块都快速显示。"
     sophia: "整块都快速显示。"
 
 together (line="<nw>,<fast>|<w>"):
-    eileen: "第一句同时应用 nw 和 fast。"
+    autumn: "第一句同时应用 nw 和 fast。"
     sophia: "第二句应用 w。"
 ```
 
@@ -2938,7 +2938,7 @@ together (line="<nw>,<fast>|<w>"):
 $ shared_mods = {"speed": store["text_speed"], "voice_delay": 0.1}
 
 together (inp=shared_mods):
-    eileen: "你好。"    # 等价于 (speed=store["text_speed"], voice_delay=0.1)
+    autumn: "你好。"    # 等价于 (speed=store["text_speed"], voice_delay=0.1)
     sophia: "再见。"    # 同上
 
 # 配合 expoint 使用
@@ -2946,7 +2946,7 @@ expoint dialogue_modifiers:
     -> {"speed": 0.8, "face": "serious"}
 
 together (inp=dialogue_modifiers):
-    eileen: "听着。"
+    autumn: "听着。"
     sophia: "我知道了。"
 ```
 
@@ -2954,7 +2954,7 @@ together (inp=dialogue_modifiers):
 
 ```apy
 together (inp={"speed": 0.5}):
-    eileen: "慢速。"              # speed=0.5
+    autumn: "慢速。"              # speed=0.5
     sophia: "正常速度。" (speed=1.0)  # 行内覆盖，speed=1.0
 ```
 
@@ -2962,7 +2962,7 @@ together (inp={"speed": 0.5}):
 
 ```apy
 together (line="<nw>|<w>", inp={"speed": 0.7}):
-    eileen: "第一句。"
+    autumn: "第一句。"
     sophia: "第二句。"
 ```
 
@@ -2992,14 +2992,14 @@ engine:
 
 ```apy
 # nowait：说完立刻推进，无重叠
-eileen: "你说什么？" (nowait)
+autumn: "你说什么？" (nowait)
 sophia: "我说——"   (nowait)
-eileen: "什么！"
+autumn: "什么！"
 
 # parallel：真正的重叠，A还没说完B就开口
 parallel:
     track dialogue (interactive):
-        eileen: "你说什——"
+        autumn: "你说什——"
     track sophia_line:
         wait 0.5
         sophia: "闭嘴！"
@@ -3010,10 +3010,10 @@ parallel:
 多个角色说同一句话，显示在同一个对话框：
 
 ```apy
-chorus eileen sophia:
+chorus autumn sophia:
     "我们绝不放弃！"
 
-chorus eileen sophia narrator:
+chorus autumn sophia narrator:
     "这一刻，所有人都明白了。" (speed=0.8)
 ```
 
@@ -3022,17 +3022,17 @@ chorus eileen sophia narrator:
 ```apy
 engine:
     chorus:
-        name_format    = "join"     # "Eileen & Sophia"（默认）
-        name_format    = "list"     # "Eileen, Sophia"
+        name_format    = "join"     # "autumn & Sophia"（默认）
+        name_format    = "list"     # "autumn, Sophia"
         name_separator = " & "      # join 模式下的分隔符
 ```
 
 语音：所有参与角色同时播放各自的语音文件，走各自的 `voice_prefix`：
 
 ```apy
-chorus eileen sophia:
+chorus autumn sophia:
     "我们绝不放弃！" (voice="chorus_001")
-    # eileen: vo/eileen/chorus_001.ogg
+    # autumn: vo/autumn/chorus_001.ogg
     # sophia: vo/sophia/chorus_001.ogg
 ```
 
@@ -3045,7 +3045,7 @@ chorus eileen sophia:
 ```apy
 parallel:
     track dialogue (interactive):
-        eileen: "她慢慢地说着。"
+        autumn: "她慢慢地说着。"
     track narration:
         @ "窗外的雨还在下。"    # 旁白不需要用户输入，不产生输入路由冲突
 ```
@@ -3688,16 +3688,16 @@ dropdown bind=store["lang"] options=["中文", "English", "日本語"]
 **角色声明**（在 `define char` 中）：
 
 ```apy
-define char eileen:
-    name "Eileen"
-    side_image "ui/side/eileen_neutral.png"     # 静态单张
+define char autumn:
+    name "autumn"
+    side_image "ui/side/autumn_neutral.png"     # 静态单张
 
     # 或：跟随表情状态切换（states 模型）
     side_image:
         states:
-            neutral  "ui/side/eileen_neutral.png"
-            happy    "ui/side/eileen_happy.png"
-            sad      "ui/side/eileen_sad.png"
+            neutral  "ui/side/autumn_neutral.png"
+            happy    "ui/side/autumn_happy.png"
+            sad      "ui/side/autumn_sad.png"
         default_expression "neutral"
 
     # 或：引用角色自身的 states 定义（自动同步表情）
@@ -3789,7 +3789,7 @@ button "邮件":
 **`avatar`**：头像控件，内置圆形裁剪
 
 ```apy
-avatar src="portraits/eileen.png" size=64
+avatar src="portraits/autumn.png" size=64
 avatar src=store["player_avatar"] size=48 (border=(2, #ff8800))
 ```
 
@@ -4351,7 +4351,7 @@ gui tooltip(text):
             text text
 
 gui damage_number(value):
-    follow eileen offset=(0, -20):
+    follow autumn offset=(0, -20):
         text value
 ```
 
@@ -5049,11 +5049,11 @@ template BaseBox:
     padding (20, 10)
     text_color #ffffff
 
-# ui/eileen_box.apy
+# ui/autumn_box.apy
 import "ui/base.apy"
 
-template EileenBox extends BaseBox:
-    background "ui/box_eileen.png"
+template autumnBox extends BaseBox:
+    background "ui/box_autumn.png"
     name_color #ff8800
     font "fonts/handwriting.ttf"
 ```
@@ -5675,7 +5675,7 @@ show "path/to/home.png"
 play music "path/to/rain.ogg"
 ```
 
-**`engine.open_file()`**：在 Python 块中读取项目内任意文件时，使用 `engine.open_file()` 而非直接 `open()`。引擎透明处理文件系统路径和归档（`.axnpak`）内路径的差异，保证打包后行为一致：
+**`engine.open_file()`**：在 Python 块中读取项目内任意文件时，使用 `engine.open_file()` 而非直接 `open()`。引擎透明处理文件系统路径和归档（`.npa`）内路径的差异，保证打包后行为一致：
 
 ```python
 # python: 块内
@@ -5713,7 +5713,7 @@ show "home.jpg"             # 同目录下同时有 home.png 和 home.jpg 时消
 
 ```apy
 show home          # 符号表：图片文件 → 场景背景
-show eileen        # 符号表：define char → 立绘
+show autumn        # 符号表：define char → 立绘
 show hud           # 符号表：gui 定义 → UI 控件
 show MyEffect()    # 符号表：自定义可显示类 → 自定义对象
 ```
@@ -6044,7 +6044,7 @@ AxnParseError: Unclosed bracket in '$' line
   → scene.apy, line 12
 
   10 |
-  11 | eileen: "你好。"
+  11 | autumn: "你好。"
   12 | $ x = (
             ^
   13 |     1 + 2
@@ -6090,10 +6090,10 @@ Hint: Labels are globally visible. Rename one to resolve the conflict.
 
 ```
 AxnParseError: Circular inheritance detected
-  eileen_adult → eileen_teen → eileen_adult
+  autumn_adult → autumn_teen → autumn_adult
 
-  → characters.apy, line 8   (define char eileen_adult extends eileen_teen)
-  → characters.apy, line 15  (define char eileen_teen extends eileen_adult)
+  → characters.apy, line 8   (define char autumn_adult extends autumn_teen)
+  → characters.apy, line 15  (define char autumn_teen extends autumn_adult)
 ```
 
 **警告格式：**
@@ -6103,7 +6103,7 @@ AxnParseError: Circular inheritance detected
 ```
 AxnWarning: [scheduler] 'wait for all' has no finite transforms to wait for.
   All transforms are 'repeat forever'. Did you mean to use 'wait'?
-  → eileen_enter animation block, scene.apy, line 3
+  → autumn_enter animation block, scene.apy, line 3
 ```
 
 #### Hint 策略
@@ -6386,7 +6386,7 @@ class Token:
 - mtime 变了：计算 SHA-256 hash，hash 也变了才视为需要重新解析
 - 缓存损坏（pickle 读取失败）：视为无效，重新解析
 
-缓存文件存放在项目的 `.axncache/` 目录，构建发布包时不打入包内。
+缓存文件存放在项目的 `.cache/` 目录，构建发布包时不打入包内。
 
 #### 注释归属规则
 
@@ -6750,8 +6750,8 @@ engine:
 **手动预加载**（用于分支预测不到的场景）：
 
 ```apy
-preload "assets/eileen/angry.png"
-preload "assets/bg/throne_room.png" "assets/eileen/formal.png"   # 多个
+preload "assets/autumn/angry.png"
+preload "assets/bg/throne_room.png" "assets/autumn/formal.png"   # 多个
 preload label route_a_start          # 预加载指定 label 的静态资源集合
 ```
 
@@ -6811,7 +6811,7 @@ filter music (reverb(room=0.8)) 1.0
 
 ```apy
 filter voice (pitch(factor=0.7), reverb(room=0.4))
-eileen: "……这是你的声音吗？"
+autumn: "……这是你的声音吗？"
 filter voice none 0.5
 ```
 
@@ -6892,7 +6892,7 @@ style glitch_text:
         speed     0.03
 
 # 对话行内联
-eileen: "̴̢̛y̵̛o̷̕u̸̧ ̶͝c̵̀a̸͝n̴̛'̸̀t̸̡ ̷̕ȩ̴s̷̀c̷͝a̵͝p̴̛e̸̡" (style=glitch_text)
+autumn: "̴̢̛y̵̛o̷̕u̸̧ ̶͝c̵̀a̸͝n̴̛'̸̀t̸̡ ̷̕ȩ̴s̷̀c̷͝a̵͝p̴̛e̸̡" (style=glitch_text)
 
 # 控件内联
 text "ERROR" (scramble=(intensity=0.8, charset="binary"))
@@ -6943,19 +6943,19 @@ engine:
 
 #### 归档（Asset Archive）
 
-将资源文件打包为单个 `.axnpak` 归档文件，引擎在 `asset/loader.py` 层拦截路径解析，透明地从归档内读取资源。开发者和 `.apy` 脚本无需感知资源来自文件系统还是归档。
+将资源文件打包为单个 `.npa` 归档文件，引擎在 `asset/loader.py` 层拦截路径解析，透明地从归档内读取资源。开发者和 `.apy` 脚本无需感知资源来自文件系统还是归档。
 
 `axn build` 扩展参数：
 
 ```
-axn build --pack assets/dlc1/ --output dlc1.axnpak
+axn build --pack assets/dlc1/ --output dlc1.npa
 ```
 
 运行时导入归档（须在 `flow.apy` 中有调用点）：
 
 ```apy
 label start:
-    $ engine.mount_archive("dlc1.axnpak")
+    $ engine.mount_archive("dlc1.npa")
     call chapter1.apy::prologue
 ```
 
@@ -7006,7 +7006,7 @@ engine:
 ```apy
 define achievement first_meeting:
     name        "初次相遇"
-    description "第一次见到了 Eileen。"
+    description "第一次见到了 autumn。"
     icon        "ui/ach/first_meeting.png"
     hidden      = false       # true 时在未解锁前隐藏名称和描述
 
@@ -7174,7 +7174,7 @@ $ preferences.self_voicing = False   # 关闭
 4. UI 控件的 `label` 内容（`button`、`text` 等）
 
 ```apy
-eileen: "…" (voice_text="Eileen 沉默了。")    # 显示省略号，朗读描述性文字
+autumn: "…" (voice_text="autumn 沉默了。")    # 显示省略号，朗读描述性文字
 button "×" (accessibility_label="关闭对话框") on_click: Return()
 ```
 
@@ -7204,27 +7204,27 @@ engine:
 **声明**（在 `define char` 内）：
 
 ```apy
-define char eileen:
-    name "Eileen"
-    sprites "assets/eileen/"
+define char autumn:
+    name "autumn"
+    sprites "assets/autumn/"
     callbacks:
-        on_start:    eileen_on_start      # 对话行开始显示时触发
-        on_advance:  eileen_on_advance    # 用户点击推进时触发（含 <w> 中途点击）
-        on_end:      eileen_on_end        # 对话行完全结束后触发
-        on_voice:    eileen_on_voice      # 语音开始播放时触发
+        on_start:    autumn_on_start      # 对话行开始显示时触发
+        on_advance:  autumn_on_advance    # 用户点击推进时触发（含 <w> 中途点击）
+        on_end:      autumn_on_end        # 对话行完全结束后触发
+        on_voice:    autumn_on_voice      # 语音开始播放时触发
 ```
 
 回调函数在 Python 中定义：
 
 ```python
-def eileen_on_start(event):
+def autumn_on_start(event):
     # event.char     : 角色对象
     # event.text     : 当前对话文本（已插值）
     # event.line     : 源码行号
     # event.filename : 源码文件名
-    store["last_speaker"] = "eileen"
+    store["last_speaker"] = "autumn"
 
-def eileen_on_end(event):
+def autumn_on_end(event):
     store["dialogue_count"] += 1
 ```
 
@@ -7243,7 +7243,7 @@ engine:
 **`voice_tag`**：为角色声音分组，方便统一控制音量（如"所有 NPC 音量"独立于"主角音量"）：
 
 ```apy
-define char eileen:
+define char autumn:
     voice_tag "heroine"    # 音量分组标签
 
 define char merchant:
@@ -7280,7 +7280,7 @@ label ch1_ending:
         thumb     = "ui/replay/ch1_end.png",
         category  = "第一章"
     )
-    eileen: "再见。"
+    autumn: "再见。"
 ```
 
 重放时的 `store` 隔离：回放期间引擎创建一个 `store` 快照副本，回放结束后恢复原始 `store`，游戏状态不受影响。回放内的 `checkpoint` 指令静默忽略（不触发存档）。
@@ -7390,7 +7390,7 @@ on key "up up down down left right left right b a":
 # 彩蛋内容定义
 label easter_egg_konami:
     $ engine.scramble.enabled = True
-    eileen: "你找到我了。" (glitch_text)
+    autumn: "你找到我了。" (glitch_text)
     $ engine.scramble.enabled = False
 ```
 
@@ -7601,10 +7601,10 @@ call axn::screens.about (
 
 无头模式下模拟用户操作，自动跑通游戏流程，用于回归测试。
 
-**测试脚本格式**（`.axntest` 文件）：
+**测试脚本格式**（`.test` 文件）：
 
 ```
-# tests/basic_flow.axntest
+# tests/basic_flow.test
 start at: start
 click                          # 模拟点击（推进对话）
 click 5                        # 连续点击 5 次
@@ -7621,13 +7621,13 @@ screenshot: "tests/shots/ch1_end.png"   # 截图对比（与基准图对比，�
 **运行方式**：
 
 ```
-axn test tests/basic_flow.axntest          # 运行单个测试
+axn test tests/basic_flow.test          # 运行单个测试
 axn test tests/                            # 运行目录下所有测试
 axn test --headless tests/                 # 无头模式（不显示窗口）
-axn test --record tests/basic_flow.axntest # 录制模式：实际操作游戏，自动生成测试脚本
+axn test --record tests/basic_flow.test # 录制模式：实际操作游戏，自动生成测试脚本
 ```
 
-**录制模式**：开发者实际操作游戏，引擎记录所有点击和选择，自动生成 `.axntest` 文件，降低编写测试的成本。
+**录制模式**：开发者实际操作游戏，引擎记录所有点击和选择，自动生成 `.test` 文件，降低编写测试的成本。
 
 **截图对比**：首次运行时生成基准截图存入 `tests/baseline/`，后续运行时对比，像素差异超过阈值（默认 1%，可配置）时测试失败。
 
