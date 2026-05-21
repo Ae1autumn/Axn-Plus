@@ -4641,17 +4641,61 @@ gui menu_panel:
 
 根据状态动态改变样式，不需要 if/else 切换整个控件。
 
-**预定义状态关键字**（`selected`、`hovered`、`focused`、`disabled`、`pressed`）直接用状态名：
+**预定义状态关键字**
+
+六个内置状态，直接用状态名作为缩进键：
+
+| 状态 | 触发条件 |
+|------|---------|
+| `hovered` | 鼠标悬停在控件上 |
+| `pressed` | 鼠标按下未松开（瞬时） |
+| `active` | 持续激活态（如按住不松、长按操作） |
+| `selected` | 静态选中态（radio 选中、tab 激活，由 `bind` 或 `on_click` 手动维护） |
+| `focused` | 键盘/手柄焦点在此控件上 |
+| `disabled` | 控件不可交互 |
+
+`active` 与 `selected` 的区别：`pressed` 是鼠标按下的瞬时态；`active` 是按住不松的持续态（适合长按类操作）；`selected` 是开发者显式维护的静态选中态，与鼠标操作无关。
 
 ```apy
 gui option_button(label):
     style:
         background #444444
-        hovered:  background #555555
-        selected: background #226622
-        focused:  border (2, #aaaaff)
-        disabled: background #222222
+        hovered:   background #555555
+        pressed:   background #3a3a3a
+        active:    background #1a6622
+        selected:  background #226622
+        focused:   border (2, #aaaaff)
+        disabled:  background #222222
 ```
+
+**遮罩层（`overlay` 与 `alpha`）**
+
+两种遮罩语义不同，均可用于任意状态：
+
+- **`overlay`**：在控件表面叠加一层半透明颜色，子元素不受影响，适合"蒙一层色"的场景
+- **`alpha`**：降低整个控件（含子元素）的透明度，适合整体淡出的场景
+
+```apy
+gui option_button(label):
+    style:
+        background #444444
+        disabled:
+            background #222222
+            overlay #00000055    # 半透明黑色蒙层叠在表面
+        # 或者：
+        disabled:
+            alpha 0.4            # 整体降透明度（含文字、图标等子元素）
+```
+
+两者可以同时使用，`overlay` 先合成，`alpha` 作用于合成结果：
+
+```apy
+disabled:
+    overlay #00000044
+    alpha 0.7
+```
+
+`overlay` 接受 `#rrggbbaa` 格式（含 alpha 通道），`alpha` 接受 `0.0`–`1.0` 浮点数。两者均支持 `$token` 引用。
 
 **`state` 变量绑定**：`when` 支持绑定 `state` 局部变量的简单比较（`==`、`!=`、`>`、`<`），GUI 完整可解析：
 
@@ -4987,7 +5031,15 @@ gui delete_button(label) extends base_button:
 
 ### `window`（Qt 后端）
 
-`window` 使用声明式语法，包一层抽象屏蔽 Qt 概念，足够简单。复用 `template` / `extends` 进行组件继承：
+`window` 在 Qt 控件之上包一层薄抽象，屏蔽 Qt 概念，同时保留 Qt 逃逸出口。核心原则：**高频场景用声明式语法，低频复杂需求用 `qt:` 逃逸块。**
+
+开发者不需要了解 Qt 的布局管理器或信号槽机制即可完成大部分 UI 工作；确实需要原生 Qt 能力时，`qt:` 块提供完整访问权限。
+
+---
+
+#### 声明语法与组件继承
+
+`window` 支持函数签名风格参数，与 `gui` 保持一致。通过 `template` / `extends` 进行组件继承：
 
 ```apy
 # ui/base.apy
@@ -4996,26 +5048,154 @@ template BaseBox:
     font "fonts/default.ttf"
     padding (20, 10)
     text_color #ffffff
-```
 
-```apy
 # ui/eileen_box.apy
 import "ui/base.apy"
 
-EileenBox extends BaseBox:
+template EileenBox extends BaseBox:
     background "ui/box_eileen.png"
     name_color #ff8800
     font "fonts/handwriting.ttf"
 ```
 
-`window` 的 `template` / `extends` 与 `gui` 的继承语义不同：
+带参数的 `window` 定义：
 
-| | `gui extends` | `window template/extends` |
+```apy
+window DialogueBox(char_name, theme="default"):
+    background "ui/box_{theme}.png"
+    padding (20, 12)
+    slot name_label
+    slot dialogue_text
+```
+
+---
+
+#### 布局能力
+
+`window` 复用与 `gui` 相同的布局关键字，引擎内部翻译为对应的 Qt layout manager：
+
+| `.apy` 布局 | Qt 对应 |
+|------------|---------|
+| `vstack` | `QVBoxLayout` |
+| `hstack` | `QHBoxLayout` |
+| `grid` | `QGridLayout` |
+| `pin` | `QStackedLayout` + 绝对定位 |
+| `grow` | `setSizePolicy(Expanding)` |
+| `split` | `QSplitter` |
+| `scroll` | `QScrollArea` |
+
+```apy
+window InventoryPanel:
+    size (400, 600)
+    vstack gap=8:
+        text "背包" (font_size=20)
+        scroll vertical:
+            grid columns=4 gap=4:
+                slot items
+        hstack:
+            spacer grow
+            button "关闭" on_click: Return()
+```
+
+布局语义与 Pygame 后端完全一致，同一套规则无需记两套。
+
+---
+
+#### 条件样式
+
+`window` 支持与 `gui` 相同的六态条件样式（`hovered`、`pressed`、`active`、`selected`、`focused`、`disabled`）和遮罩层（`overlay`、`alpha`），引擎内部通过 Qt 样式表（QSS）或属性动画实现：
+
+```apy
+window OptionButton(label):
+    style:
+        background #444444
+        hovered:  background #555555
+        pressed:  background #3a3a3a
+        selected: background #226622
+        disabled:
+            overlay #00000055
+            alpha 0.5
+    text label (anchor=center)
+```
+
+Qt 后端不支持任意 `border_radius` 动画（QSS 限制），复杂圆角动画退回 `qt:` 逃逸块。
+
+---
+
+#### `qt:` 逃逸块
+
+当声明式语法表达不了所需的原生 Qt 能力时，使用 `qt:` 逃逸块，块内为完整的 Python/Qt 代码：
+
+```apy
+window VideoPlayer:
+    size (800, 450)
+    qt:
+        python:
+            from PySide6.QtMultimediaWidgets import QVideoWidget
+            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+
+            player = QMediaPlayer()
+            audio  = QAudioOutput()
+            widget = QVideoWidget()
+
+            player.setAudioOutput(audio)
+            player.setVideoOutput(widget)
+            layout.addWidget(widget)
+
+            # 暴露给引擎的接口：play / pause / stop
+            self._player = player
+
+    slot controls
+```
+
+`qt:` 块内可访问：
+- `layout`：当前控件的 Qt layout 实例（`QLayout`）
+- `widget`：当前控件的 Qt widget 实例（`QWidget`）
+- `self`：当前 `window` 控件的包装对象，可挂自定义属性供其他方法访问
+
+`qt:` 块作为代码节点处理，Axn-Editor 不解析内部结构，但归属关系在编辑器中保留。
+
+---
+
+#### 插槽系统
+
+`window` 同样支持具名 `slot`，调用方填充内容：
+
+```apy
+window BaseDialog(title):
+    background "ui/panel.png"
+    padding (20, 20)
+    vstack gap=12:
+        text title (font_size=18)
+        slot body
+        slot footer:
+            default:
+                button "确认" on_click: Return()
+
+# 调用
+use BaseDialog(title="设置"):
+    slot body:
+        toggle "全屏" bind=preferences.fullscreen
+        slider bind=preferences.music_volume min=0.0 max=1.0
+```
+
+---
+
+#### `window` 与 `gui` 的对比
+
+| | `gui`（Pygame） | `window`（Qt） |
 |---|---|---|
-| 后端 | Pygame | Qt |
-| 参数化 | 支持，函数签名风格 | 不支持 |
-| 继承 | 属性覆盖 + 参数继承 | 属性覆盖 |
-| 实例化 | 直接调用 `health_bar(80, 100)` | 引用路径 `"ui/x.apy::X"` |
+| 后端 | Pygame | Qt / PySide6 |
+| 参数化 | ✅ 函数签名风格 | ✅ 函数签名风格 |
+| 布局关键字 | ✅ 完整支持 | ✅ 复用同一套 |
+| 条件样式 | ✅ 六态 + overlay/alpha | ✅ 同上（QSS 实现） |
+| 继承 | `extends`（属性+参数） | `extends`（属性覆盖） |
+| 逃逸 | `canvas python:` | `qt: python:` |
+| 实例化 | 直接调用 `health_bar(80, 100)` | 直接调用或引用路径 `"ui/x.apy::X"` |
+| 插槽 | ✅ 具名 slot | ✅ 具名 slot |
+| Round-Trip | ✅ 完整解析 | ✅（`qt:` 块降级代码节点） |
+
+`window` 不支持 `screen` 的 `call screen` / `show screen` 语义——Qt 后端的页面切换通过 `QStackedWidget` 或 `window show` / `window hide` 指令控制，不引入新的执行流阻塞机制。需要阻塞等待用户选择时，使用 `modal show`（`modal` 是引擎层语义，两个后端均支持）。
 
 ---
 
@@ -5046,6 +5226,16 @@ EileenBox extends BaseBox:
 **`dropdown` / `radio_group` / `checkbox_group` 内置**：Ren'Py 原生缺失这些控件，需要手搓。Axn-Plus 直接内置，通过 `bind=` 绑定 `store` 变量，`options=` 接受静态列表或 `store` 变量。
 
 **后端绑定**：后端在项目初始化时选定，之后固定。Pygame 项目使用 `screen` + `gui`，Qt 项目使用 `window`，不混用。
+
+**`window` 抽象层原则**：`window` 是薄抽象，不是完整的跨后端 UI 框架。覆盖高频场景（布局、基础控件、条件样式、插槽），低频复杂需求通过 `qt:` 逃逸块访问原生 Qt API。`qt:` 块内代码不受引擎约束，开发者自行负责线程安全（不得在 `qt:` 块内直接访问 `store`，须通过 `UICommand` 机制）。
+
+**`window` 布局复用同一套关键字**：`vstack`、`hstack`、`grid`、`pin`、`grow`、`split`、`scroll` 在 `window` 内语义与 `gui` 完全一致，引擎内部分别翻译为对应的 Qt layout manager，开发者不需要记两套规则。
+
+**`window` 参数化支持**：`window` 定义支持函数签名风格参数（与 `gui` 一致），`template` 关键字可省略直接用 `window 名称(参数):`，两者等价。`extends` 只继承属性，不继承参数列表，子类需独立声明参数。
+
+**六态条件样式**：预定义状态扩展为六个——`hovered`、`pressed`、`active`、`selected`、`focused`、`disabled`。`pressed` 是鼠标按下的瞬时态；`active` 是持续激活态（按住不松、长按类操作）；`selected` 是开发者显式维护的静态选中态，与鼠标操作无关。三者语义不重叠，不允许混用。
+
+**`overlay` 与 `alpha` 遮罩**：`overlay` 在控件表面叠加半透明色，子元素不受影响；`alpha` 降低整个控件（含子元素）的透明度。两者均可用于任意状态，可同时使用（`overlay` 先合成，`alpha` 作用于合成结果）。`overlay` 接受 `#rrggbbaa` 格式，`alpha` 接受 `0.0`–`1.0` 浮点数，均支持 `$token` 引用。
 
 **`screen` 与 `gui` 的职责**：`screen` 负责布局——把控件组合成完整的 UI 画面；`gui` 负责控件的封装与复用。`use` 只用于 screen 嵌套 screen；`gui` 控件用直接调用语法。有插槽填充时必须写 `use`，无插槽填充时 `use` 可省略。
 
@@ -5156,6 +5346,13 @@ AxnThemeError: Type mismatch in token expression
 | `apply mixin if condition` | apply 节点显示条件字段，条件参数变量名可编辑 |
 | `when ... and/or/not ...` 组合条件 | 样式编辑器内组合条件字段，支持 and/or/not 可视化编辑 |
 | `window show/hide/auto` | 脚本区对话框控制节点；`hide (all)` 节点显示 mode 下拉选择 |
+| `active` 状态 | 样式编辑器内与 `pressed`、`selected` 并列；标注"持续激活态，区别于 pressed（瞬时）和 selected（静态）" |
+| `overlay` 遮罩 | 样式编辑器内颜色选择器，带 alpha 通道滑块；与 `alpha` 字段并排展示，标注"叠加在表面，子元素不受影响" |
+| `alpha` 透明度 | 样式编辑器内 0.0–1.0 滑块；标注"影响整个控件含子元素" |
+| `window` 定义 | 编辑器 Qt 后端专用控件库面板；参数列表完整可解析；`qt:` 逃逸块降级为代码节点，归属关系保留 |
+| `window extends` | 控件继承树，继承字段以灰色标注来源；子类参数列表独立展示 |
+| `window` 布局关键字 | 与 `gui` 共用同一套布局编辑器；编辑器标注"Qt 后端：翻译为对应 Qt layout manager" |
+| `qt:` 逃逸块 | 代码节点，`layout` / `widget` / `self` 变量在节点属性面板中列出并标注用途 |
 
 ---
 
@@ -5718,6 +5915,7 @@ axn_plus/
    platform/
       __init__.py
       steam.py               # Steamworks API 封装
+      sdl2_native.py         # SDL2 原生扩展（手柄震动、传感器、剪贴板等）
       tts.py                 # TTS / Self-Voicing 后端抽象
       tts_windows.py         # SAPI 5
       tts_macos.py           # AVSpeechSynthesizer
@@ -6898,6 +7096,51 @@ on_event channel="global" "on_leaderboard_fetched": (entries):
 ```
 
 **开发模式**：未安装 Steam 或 `steam_appid.txt` 不存在时，所有 `engine.steam.*` 调用返回安全默认值（成就静默忽略，排行榜返回空列表），不报错，方便无 Steam 客户端的开发环境调试。
+
+---
+
+#### SDL2 原生扩展（Native SDL2）
+
+Pygame 底层已基于 SDL2，此扩展暴露 Pygame 未封装的原生 SDL2 能力，通过 `pysdl2` bindings 实现。**现阶段绝大多数项目不需要此扩展**，仅在有明确需求时启用。
+
+在 `options_window.apy` 中开启：
+
+```apy
+engine:
+    extensions:
+        builtins:
+            sdl2_native = true
+```
+
+**当前暴露的能力：**
+
+| 功能 | API | 说明 |
+|------|-----|------|
+| 手柄震动（Rumble） | `engine.sdl2.rumble(low, high, duration_ms)` | 视觉小说用途有限，存在即可 |
+| 高精度定时器 | `engine.sdl2.get_ticks_ns()` | 纳秒级时间戳 |
+| 传感器（陀螺仪等） | `engine.sdl2.sensor` | Android 特有，适合体感交互彩蛋 |
+| 剪贴板读写 | `engine.sdl2.clipboard` | 读取 / 写入系统剪贴板 |
+| 屏幕亮度 | `engine.sdl2.set_brightness(val)` | 0.0–1.0，部分平台支持 |
+
+**不在此扩展覆盖范围内：**
+
+- HDR / 高刷新率显示——Pygame 2.x 不支持，SDL2 原生支持有限，视觉小说无实际需求
+- 多窗口——Axn-Plus 为单窗口设计，不计划支持
+- Vulkan / Metal 渲染——超出当前架构范围
+
+**使用示例：**
+
+```apy
+# 手柄震动（对话中的演出效果）
+if engine.variant("gamepad"):
+    $ engine.sdl2.rumble(0.3, 0.8, 500)   # 低频0.3, 高频0.8, 持续500ms
+
+# 剪贴板（复制对话文本）
+button "复制台词" on_click:
+    $ engine.sdl2.clipboard.set(store["last_dialogue"])
+```
+
+**依赖说明**：`pysdl2` 需要系统已安装 SDL2 动态库（Windows / macOS 打包时随包附带，Linux 由系统包管理器提供，Android 由 Pygame 的 SDL2 构建覆盖）。未安装时 `engine.sdl2` 所有调用静默返回 `None` 并输出警告，不阻止游戏运行。
 
 ---
 
