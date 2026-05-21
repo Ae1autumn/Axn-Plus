@@ -489,6 +489,37 @@ label morning_scene(mood, weather="sunny"):
     eileen: "早上好。"
     return mood + "_done"   # return 后跟任意 Python 表达式
 
+# 局部 label：. 前缀，只在当前文件内可见，不进全局符号表
+# 适合模块内部跳转点，避免 loop_start / check_condition 等通用名污染全局命名空间
+label chapter1_battle:
+    call .intro
+    jump .main_loop
+
+label .intro:              # 局部 label，只在声明所在文件内可见
+    eileen: "战斗开始！"
+    return
+
+label .main_loop:
+    $ hp -= 10
+    if hp <= 0:
+        jump .ending
+    jump .main_loop
+
+label .ending:
+    eileen: "结束了。"
+    return
+
+# 跨文件访问局部 label：使用显式路径语法
+call chapter1.apy::.intro       # 显式路径自然扩展，与现有跨文件引用语法一致
+
+# 局部 label 规则：
+# - . 前缀 = 局部 label，Parser 第一遍扫描时识别，不写入全局符号表
+# - 只在声明所在文件内可见，同文件内直接用 . 前缀名调用
+# - 不同文件可以有同名局部 label（如 .intro），互不冲突
+# - 跨文件访问必须用显式路径：文件名::.label名
+# - label 冲突检查只针对全局 label，局部 label 不参与全局冲突检测
+# - GUI 编辑器在脚本区以缩进或折叠形式展示局部 label，视觉上归属所在文件
+
 # 条件（支持 elif 链）
 if flag_met_eileen:
     eileen: "好久不见。"
@@ -699,6 +730,9 @@ eileen: "你好，{player_name}！"          # 插值保持不变，无冲突
 | `<nw>` | 说完不等点击，直接推进执行流 |
 | `<fast>` | 跳过打字机效果，直接显示完整文本 |
 | `<image=path>` | 内联图片（表情图标等） |
+| `<s>` / `</s>` | 删除线 |
+| `<u>` / `</u>` | 下划线 |
+| `<speed=N>` / `</speed>` | 句内打字机速度倍率（`<speed=2>` 为两倍速，`<speed=0.5>` 为半速；与行级 `speed=` 修饰符正交，两者相乘生效） |
 | `<rb>` / `<rt>` / `</rb>` | Ruby 注音（`<rb>漢<rt>かん</rt>字<rt>じ</rt></rb>`） |
 
 **`<w>` / `<nw>` 对 VM 执行模型的影响：**
@@ -2028,8 +2062,11 @@ expoint after_prologue
 | `engine.cursor` 变量 | 脚本区代码节点；编辑器在变量面板标注"光标控制变量，优先级最高" |
 | 控件 `cursor=` 参数 | 控件节点的光标字段；具名关键字显示下拉列表，路径显示文件名 |
 | 文本标签 `<b>` / `<w>` / `<nw>` 等 | 对话积木块内富文本编辑器，标签高亮显示；`<w>` 显示为中途等待点标记；`<nw>` 显示为"无需等待"标记 |
+| 文本标签 `<s>` / `<u>` | 对话积木块内富文本编辑器，删除线和下划线高亮显示 |
+| 文本标签 `<speed=N>` | 对话积木块内富文本编辑器，显示速度倍率字段；与行级 `speed=` 修饰符视觉区分（后者作用于整行） |
 | Ruby 注音 `<rb>` / `<rt>` | 对话积木块内注音编辑器，原文与注音分列显示 |
 | `no_history` 修饰符 | 对话积木块上的"不计入历史"开关 |
+| 局部 label（`.` 前缀） | 脚本区以缩进或折叠形式展示，与全局 label 视觉区分；标注"仅在当前文件可见"；跨文件引用时显示完整路径 `文件名::.label名` |
 | `label (rollback=...)` | label 节点的回滚策略字段，下拉选择 `dialogue` / `checkpoint` / `none` |
 | `window show/hide/auto` | 脚本区对话框控制积木块；`hide (all)` 显示 mode 字段 |
 | `pause`（游戏进程） | 脚本区暂停积木块；显示冻结类型（全局 / transform / 控件） |
@@ -2279,6 +2316,8 @@ Hint: Use 'show eileen (duration=0.3)' to make intent explicit.
 **`label` 签名**：直接使用 Python 函数签名风格，支持默认值、`*args`、`**kwargs`。`return` 后跟任意 Python 表达式。
 
 **跨文件引用**：`jump` / `call` 不需要 `import`，引擎启动时自动扫描所有 `.apy` 文件，label 冲突在启动时报错。跨文件引用 `define`（如 UI 控件）需要显式 `import`，使依赖关系可见。label 命名冲突由引擎扫描和 VSCode 插件共同处理，语言层不强制约束。
+
+**局部 label（`.` 前缀）**：`.` 前缀声明的 label 只在声明所在文件内可见，不写入全局符号表，不参与全局冲突检测。适合模块内部跳转点（`.intro`、`.main_loop`、`.ending` 等），避免通用名污染全局命名空间。不同文件可以有同名局部 label，互不冲突。同文件内直接用 `.前缀名` 调用；跨文件访问使用显式路径 `文件名::.label名`，与现有跨文件引用语法一致。Parser 第一遍扫描时识别 `.` 前缀，局部 label 不进第一遍收集的全局名字集合。GUI 编辑器以缩进或折叠形式展示局部 label，视觉上归属所在文件，与全局 label 视觉区分。
 
 **UI 控件定义**：在独立的 `.apy` 文件中定义，通过 `文件路径::控件名` 语法引用，如 `"ui/eileen_box.apy::EileenBox"`。
 
@@ -3426,6 +3465,17 @@ class QuestState:
 ```
 
 若类中含不可 pickle 的字段（lambda、文件句柄、socket 等），存档时抛出 `AxnSaveError`，错误信息会指出问题字段并建议改用 `Saveable`。
+
+**`@saveable` 静态字段扫描**：`@saveable` 装饰器在**类定义时**（而非运行时存档时）对 `__init__` 的字段赋值做静态扫描，发现明显不可序列化的类型（`lambda`、文件句柄、`socket`、`threading.Lock` 等）时立即输出警告，不等到存档时才报错：
+
+```
+AxnWarning: [save] @saveable class 'QuestState' contains field 'handler'
+  of type 'function', which may not be picklable.
+  Consider excluding it via __save__ / __load__ or using Saveable base class.
+  → logic/quest.py, line 8
+```
+
+扫描基于 `__init__` 的类型注解（`field: type`）和默认值类型推断，不做运行时实例分析。无类型注解且默认值为安全类型时不警告；有注解为危险类型时警告。此扫描为尽力而为，不保证覆盖所有场景，复杂场景退回 `Saveable`。
 
 **`Saveable`**：重量声明，开发者完全控制序列化逻辑。适合需要跨版本 migration 的场景。
 
@@ -5428,6 +5478,20 @@ show "path/to/home.png"
 play music "path/to/rain.ogg"
 ```
 
+**`engine.open_file()`**：在 Python 块中读取项目内任意文件时，使用 `engine.open_file()` 而非直接 `open()`。引擎透明处理文件系统路径和归档（`.axnpak`）内路径的差异，保证打包后行为一致：
+
+```python
+# python: 块内
+import json
+with engine.open_file("data/config.json") as f:
+    data = json.load(f)
+
+with engine.open_file("data/dialogue_extra.txt") as f:
+    lines = f.read().splitlines()
+```
+
+直接使用 `open()` 在开发期有效，但打包后资源被归档时会找不到文件。`engine.open_file()` 同时支持两种场景，推荐始终使用。返回标准 `io.IOBase` 对象，接口与内置 `open()` 一致（只读模式）。
+
 **支持的文件格式：**
 
 | 类型 | 格式 |
@@ -5633,7 +5697,7 @@ axn_plus/
          layout.py           # vstack / hstack / grid / pin 等
    asset/
       __init__.py
-      loader.py              # 资源加载、缓存
+      loader.py              # 资源加载、缓存；engine.open_file() 透明路径接口实现
       audio.py               # play / pause / stop / 多通道管理
       video.py
    apy/
