@@ -305,18 +305,24 @@ camera reset                            # 立即重置
 camera reset 0.5                        # 指定 duration
 
 # 音频（子命令结构）
+# play music / ambient 默认 loop（视觉小说 BGM 和环境音绝大多数需要循环）
+# play sound / voice 默认不循环（音效和语音通常单次播放）
+# 需要单次播放时显式加 (once)，需要循环时显式加 (loop)——与各自默认相反时才需要声明
 # play 位置参数顺序：路径 → volume → fadein → fadeout
-play music "bgm/morning.ogg"                            # 全默认
-play music "bgm/morning.ogg" 0.8                        # 指定 volume
-play music "bgm/morning.ogg" 0.8 1.0                    # volume + fadein
-play music "bgm/morning.ogg" 0.8 1.0 1.0 (loop)        # 补全具名参数
-play sound "sfx/door.ogg" 0.6
+play music "bgm/morning.ogg"                            # 全默认，自动循环
+play music "bgm/morning.ogg" 0.8                        # 指定 volume，自动循环
+play music "bgm/morning.ogg" 0.8 1.0                    # volume + fadein，自动循环
+play music "bgm/ending.ogg" (once)                      # 片尾曲，只播一次
+play music "bgm/ending.ogg" 0.8 1.0 (once)             # 带参数的单次播放
+play sound "sfx/door.ogg" 0.6                           # 音效，默认单次
+play sound "sfx/heartbeat.ogg" (loop)                   # 音效循环（显式声明）
 
 # queue：将音频加入通道队列，当前播放结束后自动播放
 # 位置参数顺序与 play 一致：路径 → volume → fadein → fadeout
+# queue music / ambient 同样默认 loop
 queue music "bgm/day.ogg"
 queue music "bgm/night.ogg" 0.6
-queue music "bgm/night.ogg" 0.6 1.0 (loop)
+queue music "bgm/ending.ogg" (once)                     # 队列中的单次播放
 
 # stop 位置参数顺序：fadeout
 stop music                              # 立即停止
@@ -2205,7 +2211,8 @@ Hint: Use 'show autumn (duration=0.3)' to make intent explicit.
 | `scene` | 路径 → duration | `with` `keep` |
 | `clear` | 角色列表（可选） | `layer` |
 | `expression` | 角色 → 表情名（可选） | 动态层具名参数（`face` `brow` `outfit` 等）`transition` |
-| `play music/sound/voice/ambient` | 路径 → volume → fadein → fadeout | `loop` |
+| `play music/ambient` | 路径 → volume → fadein → fadeout | `once`（默认 loop，加 `once` 单次播放） |
+| `play sound/voice` | 路径 → volume → fadein → fadeout | `loop`（默认单次，加 `loop` 循环） |
 | `play video` | 路径 → volume | `layer` `loop` `async` `blocking` |
 | `stop music/sound/voice/ambient` | fadeout | — |
 | `stop video` | fadeout | — |
@@ -2506,6 +2513,8 @@ input disable:
 **`show` 位置与坐标扩展**：`show` 的位置参数只接受预定义关键字（`left`、`center`、`right` 等），数值坐标通过具名参数 `pos=(x, y)` 传入。两者类型不同（关键字 vs 数字），解析器无歧义。duration 必须跟在位置关键字之后；数字直接跟在角色名后面（无前置位置关键字）时，引擎运行时输出警告并降级处理为 duration，保持当前位置，可 ignore。推荐改用具名参数 `(duration=0.3)` 使意图明确。连续两次 `show` 同一角色且位置相同、第二次没有 duration 时，引擎输出警告提示可能漏写，可 ignore。
 
 **`pause` / `resume`**：独立动词，不是 `play` / `stop` 的子命令。语义区别：`stop` 停止并丢弃进度，`pause` 保留进度暂停，`resume` 从保留位置恢复。适用于 `music`、`sound`、`video`，子命令语法与 `play` / `stop` 对称。`pause` 接受 `fadeout` 位置参数（画面/音量渐暗），`resume` 接受 `fadein` 位置参数。
+
+**`play music` / `play ambient` 默认 loop**：视觉小说 BGM 和环境音绝大多数需要循环，默认 loop，单次播放时显式加 `(once)`。`play sound` / `play voice` 默认单次，循环时显式加 `(loop)`。`queue music` / `queue ambient` 同样默认 loop，与 `play` 保持一致。
 
 **`play video` 默认阻塞**：与 `play music`（默认非阻塞）相反，`play video` 默认阻塞执行流，播完后才推进。非阻塞时显式加 `(async)`。理由：视频大多数时候是过场动画，播完才推进是高频用法；背景循环视频是少数场景，需要显式声明意图。`(blocking)` 关键字保留但冗余，不推荐写。
 
@@ -5955,6 +5964,34 @@ axn_plus/
 
 `play music` 等价于 `play audio (channel="music")`，内置通道是语法糖。
 
+### 通道 UI 可见性配置
+
+在 `options_window.apy` 中声明每个通道在设置界面的显示与交互行为：
+
+```apy
+# options_window.apy
+engine:
+    audio:
+        channels:
+            music:   ui=true      # 显示滑条，玩家可拖动（内置通道默认值）
+            sound:   ui=true
+            voice:   ui=true
+            ambient: ui=locked    # 显示滑条但灰掉，不可拖动，只能脚本控制
+            # 整行不写 = 通道不在设置界面显示（但仍然可以用 play 指令播放）
+```
+
+三种状态：
+
+| `ui` 值 | 行为 |
+|---------|------|
+| `true` | 显示滑条，玩家可拖动调整 |
+| `locked` | 显示滑条但控件灰掉，玩家可见当前值但无法操作，只能通过脚本控制 |
+| 整行不写 | 通道不在设置界面出现，开发者通过 `$ preferences.xxx_volume` 或 `play` 指令控制 |
+
+内置四个通道默认 `ui=true`，不写配置时行为不变。自定义通道默认不显示，需要显式声明才出现在设置界面。
+
+`ui=locked` 适用场景：环境音量由剧情脚本控制（如梦境场景强制调低）、临时屏蔽某通道的玩家调整权限。
+
 ### 默认行为：串行队列
 
 同一通道内默认串行，新的 `play` 加入队列，等前一个结束再播：
@@ -7978,10 +8015,27 @@ axn build --platform=android --output=apk    # 直接安装包
 axn build --platform=android --output=aab    # Google Play 要求格式
 ```
 
+**Android 发布构建的准备顺序**（借鉴 Ren'Py 流程）：
+
+1. **设置包名**：在 `project.json` 的 `android.package` 字段填写包名（如 `com.studio.gamename`），包名一旦发布后不可更改。使用 `axn android set-package com.studio.gamename` 可直接修改并验证格式合法性。
+
+2. **创建签名密钥**：
+   ```
+   axn android generate-keystore
+   ```
+   交互式引导填写：别名（alias）、密码、有效期、组织信息。生成 `release.jks` 并自动写入 `project.json`。**密钥文件须妥善备份，丢失后无法更新已发布应用。** 引擎会在每次构建前检查密钥文件是否存在，不存在时报错并提示备份路径。已有密钥时跳过此步骤，直接在 `project.json` 中指定路径。
+
+3. **构建发行版**：
+   ```
+   axn build --platform=android --output=aab   # Google Play
+   axn build --platform=android --output=apk   # 直接安装
+   ```
+
 构建前自动检测依赖环境，不存在时报错给出官网链接，不自动下载：
 
 ```
 [✓] JDK 17        /usr/lib/jvm/java-17
+[✓] 签名密钥      release.jks（别名: mykey）
 [✗] Android NDK   未找到
     请在 Android Studio 中安装 NDK，或前往：
     https://developer.android.com/ndk/downloads
@@ -7989,12 +8043,11 @@ axn build --platform=android --output=aab    # Google Play 要求格式
 [✗] bundletool    未找到
     请前往：https://github.com/google/bundletool/releases
     下载后设置 BUNDLETOOL_PATH 环境变量
-[!] 签名密钥      未配置，将使用调试密钥（不适合发布）
 ```
 
 引擎不自带、不捆绑、不自动下载 JDK / NDK / bundletool，维护成本过高且开发者机器通常已有。
 
-密钥库不存在时自动生成调试密钥，正式发布前替换为 `project.json` 中配置的 `keystore`。
+密钥库不存在时自动生成调试密钥（`debug.jks`），适合开发测试，不适合发布。调试密钥构建产物在构建日志中以 `[DEBUG KEY]` 标注。
 
 **Android 资源路径**：构建时 `main/` 目录整体打入 APK 的 `assets/`，路径映射不变，`engine.open_file()` 内部处理平台差异，开发者无感知。
 
@@ -8183,6 +8236,264 @@ axn test --from-state tests/states/ch2_angry.json --label chapter2_morning
 所有开发者工具在发布包（`axn build`）中完全剥离。
 
 
+
+---
+
+## 外部命令注册接口
+
+引擎提供统一的指令扩展接口，允许开发者注册自定义动词，与内置指令使用完全相同的语法规则（位置参数、具名参数、子命令）。
+
+### 注册方式
+
+在 `startup (before):` 块或引擎初始化钩子中调用：
+
+```python
+from axn_plus.apy.stdlib import register_command
+
+@register_command(
+    verb="notify_discord",
+    subcommands=["send", "update"],          # 可选，不需要子命令时省略
+    positional=["message"],                  # 位置参数名列表，按顺序
+    named={"channel": str, "color": str}     # 具名参数名 → 类型
+)
+def handle_notify_discord(verb, subcmd, args, named, store):
+    # verb:   "notify_discord"
+    # subcmd: "send" 或 "update"，无子命令时为 None
+    # args:   位置参数值列表
+    # named:  具名参数 dict
+    # store:  当前 Store 对象（只读访问，不允许在此修改）
+    discord_webhook(named.get("channel"), args[0])
+```
+
+注册后 `.apy` 脚本中直接使用：
+
+```apy
+notify_discord send "任务完成" (channel="general", color=#00ff00)
+notify_discord update "进度更新" (channel="log")
+```
+
+### 注册规则
+
+- 注册必须在引擎启动三遍扫描之前完成（`startup (before):` 块或 `axn_init` 钩子），否则 Parser 第一遍扫描时无法识别 verb，报 `AxnParseError`
+- verb 名不能与内置指令冲突，注册时检查，冲突报 `AxnExtensionError`
+- 子命令集合由注册时声明，不可运行时动态增减
+- 同一 verb 不允许重复注册，第二次注册报 `AxnExtensionError`；需要覆盖时显式传 `override=True`
+- GUI 编辑器对外部注册命令降级为代码节点，归属关系保留；若扩展同时提供 `gui_schema`（节点描述 dict），编辑器可渲染为专用积木块
+
+### 与 `axn::` 扩展库的关系
+
+`axn::` 标准库内部使用同一套注册机制，`register_command` 是对外开放的同一接口。内置指令分发表、外部注册指令分发表在引擎启动时合并为统一的全局分发表，Parser 和 VM 无需区分来源。
+
+---
+
+## `options_window.apy` 最小配置规范
+
+一个没有复杂功能的普通视觉小说，`options_window.apy` 最少需要包含以下内容才能正常运行：
+
+```apy
+# ── 引擎运行时配置 ──────────────────────────────────────────
+engine:
+    window:
+        hide_behaviour = "overlay"   # 对话框隐藏时文字处理策略
+
+    history:
+        max_entries = 200
+
+    autosave:
+        enabled = true
+        trigger = "checkpoint"
+
+# ── 玩家偏好默认值 ───────────────────────────────────────────
+preferences:
+    # 文字
+    text_speed        = 1.0
+    skip_mode         = "seen"
+    auto_forward_time = 2.0
+    auto_delay        = 0.3
+
+    # 音量
+    music_volume      = 0.8
+    sound_volume      = 0.8
+    voice_volume      = 0.9
+
+    # 显示
+    fullscreen        = false
+
+# ── 必须存在的 UI 模板 ────────────────────────────────────────
+# 对话框（最简版，只有文字区和名字区）
+gui DialogueBox:
+    background "ui/box.png"
+    padding (20, 12)
+    vstack:
+        slot name_label
+        slot dialogue_text
+
+# 标题画面（最简版，只有开始和退出）
+screen title_screen:
+    background "ui/title_bg.png"
+    vstack gap=16:
+        button "开始游戏" on_click: jump start
+        button "退出"     on_click: exit
+```
+
+**不写就不存在**：画廊、成就、音频通道 `ui=` 配置、自定义偏好项等，不声明时引擎不报错，对应功能直接不可用。
+
+**`options_window.apy` 与 `project.json` 的职责边界**：运行时行为写 `options_window.apy`，构建/打包配置写 `project.json`，两者不互换。
+
+---
+
+## 最小参考项目
+
+引擎开发阶段应同步维护一个最小参考项目，用于验收每个子系统、提供测试环境和文档示例。不要等到引擎"完成"后再补 UI，两者同步推进，问题当场暴露。
+
+**参考项目结构：**
+
+```
+axn_sample/
+    flow.apy                  # 跑通对话、菜单、跳转、存档的最小流程
+    options_window.apy        # 最小配置（见上节）
+    main/
+        scripts/
+            ch1.apy           # 第一章：包含对话、菜单、checkpoint
+        image/
+            gui/
+                box.png       # 占位图，1×1 像素灰色
+                title_bg.png
+        audio/
+            bgm_test.ogg      # 5秒循环音频
+```
+
+**参考项目的三个用途：**
+
+1. **子系统验收**：每实现一个子系统（对话渲染、存档、菜单等）就在参考项目里接一下，立即发现接口问题
+2. **自动化测试环境**：`axn test` 的执行载体，测试脚本直接跑参考项目
+3. **文档代码示例**：文档里所有 `.apy` 示例来自参考项目的真实代码，不是手写伪代码
+
+---
+
+## 引擎核心扩展（计划集成）
+
+以下功能在功能性上必须由引擎核心提供，不适合外包给开发者自己实现。
+
+### 存档槽元数据查询 API
+
+开发者编写存档界面时必然需要查询所有槽位的信息，无此接口则存档界面无法实现：
+
+```python
+engine.save_slots()                # 返回所有槽位的元数据列表
+engine.save_slot_info(slot)        # 单个槽位：时间戳、章节名、缩略图路径、游戏时长
+engine.save_exists(slot)           # bool
+engine.delete_save(slot)           # 删除存档槽
+```
+
+### 游戏内计时器
+
+视觉小说的限时选择、计时解谜、游戏总时长统计都依赖此接口。不内置则每个开发者自己用 `store` + `$` 拼，且读档后时间状态会乱：
+
+```python
+engine.timer.start("battle_timer")
+engine.timer.elapsed("battle_timer")    # 返回已过秒数（float）
+engine.timer.pause("battle_timer")
+engine.timer.resume("battle_timer")
+engine.timer.stop("battle_timer")
+engine.timer.reset("battle_timer")
+```
+
+计时器状态自动纳入存档快照，读档后恢复，无需开发者手动处理。
+
+### `persistent` 版本迁移钩子
+
+`store` 已有 `Saveable.__load__(data, version)` 处理跨版本兼容，`persistent` 同样会遇到版本升级问题（旧玩家的解锁记录结构可能随游戏更新而变化）：
+
+```python
+# options_window.apy 的 startup (before): 块中注册
+engine.persistent.register_migration(
+    from_version = 1,
+    to_version   = 2,
+    handler      = migrate_persistent_v1_to_v2
+)
+
+def migrate_persistent_v1_to_v2(data: dict) -> dict:
+    # 旧版本 achievements 是 list，新版本改为 dict
+    if isinstance(data.get("achievements"), list):
+        data["achievements"] = {k: True for k in data["achievements"]}
+    return data
+```
+
+迁移按版本号顺序链式执行，跨多个版本时自动串联。`persistent` 文件写入版本号，读取时检查并按需执行迁移链。
+
+---
+
+## 可选插件（外部 `.apy` 模块）
+
+以下功能封装为外部脚本，开发者按需放入 `main/axn/` 目录自行选用。
+
+### 存档导出（`axn::save_export`）
+
+将存档槽导出为文件或字符串，用于备份、跨设备迁移、Bug 复现等场景：
+
+```apy
+# 导出为文件
+$ engine.save_export.to_file(slot="slot1", path="backups/save_slot1.axnsave")
+
+# 导出为 base64 字符串（可粘贴到文本框分享）
+$ export_str = engine.save_export.to_string(slot="slot1")
+show screen export_dialog(data=export_str)
+
+# 导入
+$ engine.save_export.from_file("backups/save_slot1.axnsave", slot="slot1")
+$ engine.save_export.from_string(export_str, slot="slot2")
+```
+
+导出格式：存档内容（pickle）+ 版本号 + SHA-256 校验和，整体 base64 编码。导入时校验完整性，版本不匹配时提示但允许继续（兼容性由开发者的 `Saveable.__load__` 处理）。
+
+### 本地化辅助（`axn::i18n`）
+
+数字、日期、复数格式随语言变化，不只是翻译字符串的问题：
+
+```python
+axn_i18n.format_number(1234)       # 按当前语言格式化数字
+axn_i18n.format_date(timestamp)    # 按当前语言格式化日期
+axn_i18n.plural("day", count)      # 英文复数处理（"1 day" / "2 days"）
+```
+
+### 键鼠/手柄按键提示图标（`axn::input_icons`）
+
+"按 A 键继续" 类提示，PC 上显示键盘图标，手柄接入后自动切换为对应品牌的按键图标：
+
+```apy
+image axn_input_icons.get("advance")    # 自动根据当前输入设备返回对应图标
+```
+
+包含 Xbox / PlayStation / Switch 三套按键图标资源包，可替换。
+
+### 气泡自动避让（`axn::bubble_layout`）
+
+`together` 块多角色气泡在立绘位置动态变化时的自动避让，基于简单贪心算法：气泡检测重叠后沿垂直方向推开，无需手动调整 `offset`。
+
+### 数值系统（`axn::stat`）
+
+带上下限、变化回调、历史记录的通用数值类，避免每个项目重复实现边界检查：
+
+```python
+@saveable
+class Stat:
+    def __init__(self, initial: float, min: float = 0, max: float = 100):
+        ...
+
+    def modify(self, delta: float, reason: str = "") -> float:
+        # 返回实际变化量（受边界限制后）
+        ...
+
+    def history(self) -> list[dict]:
+        # 返回变化历史：[{"delta": 5, "reason": "gift", "timestamp": ...}]
+        ...
+```
+
+```apy
+$ relationship_autumn = Stat(50, min=0, max=100)
+$ relationship_autumn.modify(+10, reason="gave_gift")
+```
 
 ---
 
