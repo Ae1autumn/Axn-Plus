@@ -8497,6 +8497,2041 @@ $ relationship_autumn.modify(+10, reason="gave_gift")
 
 ---
 
+## 脚本语法扩展
+
+### `after` — 非阻塞延迟执行
+
+```apy
+after 2.0:
+    play sound "sfx/thunder.ogg"
+    camera shake 8 0.3
+```
+
+`after` 块内的指令在指定秒数后触发，不阻塞当前执行流。对话在进行的同时，背景音效在 2 秒后自动触发，两者互不干扰。
+
+与 `parallel` 的区别：`parallel` 用于需要精细 track 控制的场景；`after` 是轻量的单次延迟触发，不产生 track，GUI 解析为带延迟标签的独立指令节点。
+
+`after` 块内只允许引擎指令，不允许对话行和 Python 块（保证 GUI 完整可解析）。
+
+---
+
+### `repeat` 块 — 固定次数重复执行
+
+```apy
+repeat 3:
+    camera shake 5 0.2
+    wait 0.3
+```
+
+固定次数重复，语义明确，不需要声明 `rollback=`（块内不允许对话行，回滚语义无歧义）。与 `while` / `for` 的区别：`repeat N` 是编译期已知次数的演出重复，不是逻辑循环。`animation` 块内同样支持 `repeat N` 结构，两者共享语义。
+
+---
+
+### `defer` — label 退出时执行
+
+```apy
+label battle_scene:
+    defer:
+        stop music 0.5
+        hide gui battle_hud
+        $ store["in_battle"] = False
+
+    show gui battle_hud
+    play music "bgm/battle.ogg"
+    $ store["in_battle"] = True
+
+    menu:
+        "逃跑" -> escape_route
+        "继续战斗" -> battle_continue
+```
+
+无论通过 `jump`、`return`、`unwind` 哪种方式离开 label，`defer` 块都会在退出时执行。对 BGM 切换、UI 清理、状态重置特别有用，避免清理逻辑散落在各个出口。
+
+规则：
+- `defer` 块只允许出现在 `label` 块内，不允许嵌套 `defer`
+- 块内只允许引擎指令和 Python 块，不允许对话行（避免退出时产生等待点）
+- 多个 `defer` 块按声明顺序逆序执行（后声明的先执行，类似栈展开）
+- `unwind` 触发时，经过的每个 label 的 `defer` 块依次执行
+
+GUI 处理：label 节点底部显示 defer 块，标注"离开时执行"，视觉上与正常执行流区分。
+
+---
+
+### `once` 块 — 生命周期内只执行一次
+
+```apy
+label daily_event:
+    once per_session:            # 本次游玩只执行一次（存入 store 临时标记）
+        autumn: "今天的天气真不错。"
+
+    once per_playthrough:        # 整个周目只执行一次（存入 store）
+        $ unlock_scene("first_morning")
+
+    once ever:                   # 永久只执行一次（存入 persistent）
+        $ persistent["seen_tutorial"] = True
+        call tutorial_label
+```
+
+三种生命周期对应三个存储层级：
+
+| 生命周期 | 存储位置 | 重置时机 |
+|---------|---------|---------|
+| `per_session` | 内存临时标记 | 游戏退出时 |
+| `per_playthrough` | `store` | 新游戏时 |
+| `ever` | `persistent` | 永不重置 |
+
+引擎自动为每个 `once` 块生成唯一标识（`文件名 + label名 + 行偏移` 哈希），开发者无需手动命名。`once` 是高频模式的语法糖，消除手动写 flag 检查的样板代码。
+
+GUI 处理：对应带生命周期标签的条件节点，标签下拉选择三种生命周期。
+
+---
+
+### `rollback fence` — 精确回滚边界
+
+```apy
+label shop_scene:
+    rollback fence:
+        $ store["gold"] -= item.price
+        $ store["inventory"].append(item)
+        autumn: "购买成功。"
+```
+
+在特定操作后设置回滚边界，玩家无法回滚到此点之前。比 `rollback=none`（禁止整个 label 回滚）更精细——只封锁消费类操作（花钱、存档覆盖确认、不可逆操作），其余对话仍可正常回滚。
+
+`rollback fence` 块执行完毕后，该块成为新的回滚起点。块内对话行正常产生回滚检查点，只是无法越过 fence 回到更早的状态。
+
+---
+
+### `unwind` — 展开调用栈
+
+```apy
+unwind                        # 清空 call 栈，回到顶层继续执行
+unwind to morning_scene       # 展开到指定 label（必须在当前栈上，否则运行时报错）
+```
+
+`return` 只退出当前 label，回到直接调用方；`unwind` 展开整个栈，适合从任意嵌套深度强制返回到起点（如全局错误恢复、章节强制结束）。
+
+`unwind to label` 的目标必须在当前 call 栈上，否则运行时抛 `AxnRuntimeError`，不静默处理。
+
+---
+
+### `snapshot` / `restore` — 手动状态快照
+
+```apy
+snapshot "before_choice" keys=[relationship, day, flag_agreed]
+
+$ relationship["autumn"] += 10
+$ flag_agreed = True
+
+restore "before_choice"
+```
+
+脚本层轻量快照，不写磁盘，存在内存里。用于叙事机制（时间回溯、蝴蝶效应预览、"如果当初"场景）。
+
+规则：
+- 快照只保存 `keys=` 指定的顶层 store 变量，省略 `keys=` 时快照全部 store
+- 快照在 label 退出时自动清除，除非显式 `persist snapshot "name"`
+- `restore` 目标不存在时运行时警告，不报错，静默跳过
+- 与 `with store` 原子块不同：`snapshot/restore` 是手动控制的跨时间线状态管理，不提供自动回滚
+
+---
+
+### `define position` — 具名位置
+
+```apy
+define position stage_left:
+    x 0.2
+    y 0.85
+    scale 0.9
+    z_order 10
+
+define position stage_right:
+    x 0.8
+    y 0.85
+    scale 0.9
+    z_order 10
+
+define position center_close:
+    x 0.5
+    y 0.9
+    scale 1.1
+    z_order 20
+
+show autumn stage_left
+show sophia stage_right
+show autumn center_close 0.3 (enter=slidein)
+```
+
+`define position` 进符号表，`show` 指令的位置参数支持具名位置关键字。项目级统一管理位置，改一处全部生效。
+
+与内置位置关键字（`left`、`center`、`right`）的关系：内置关键字是默认位置的别名，`define position` 可以覆盖内置关键字的默认值，也可以定义新的位置名。
+
+GUI 处理：位置下拉列表中同时显示内置关键字和用户定义的具名位置，具名位置显示坐标预览。
+
+---
+
+### `define group` — 角色组
+
+```apy
+define group classroom:
+    members [autumn, sophia, kenji]
+
+define group main_cast:
+    members [autumn, sophia]
+
+show group classroom left (spread=true)    # 均匀分布到预设位置
+hide group classroom 0.5
+expression group classroom sad
+expression group main_cast happy
+```
+
+`show group` 编译期展开为多条 `show` 指令，`spread=true` 时引擎自动计算均匀分布位置。`expression group` 同时修改组内所有角色的表情状态。
+
+`define group` 只是成员列表的编译期简写，不创建新的运行时对象，组内成员仍然独立可操作。
+
+---
+
+### `define sound_group` — 音效组随机播放
+
+```apy
+define sound_group footsteps:
+    "sfx/step1.ogg"
+    "sfx/step2.ogg"
+    "sfx/step3.ogg"
+    mode random    # random（默认）/ cycle（循环轮播）
+
+define sound_group page_turn:
+    "sfx/page1.ogg"
+    "sfx/page2.ogg"
+    mode cycle
+
+play sound footsteps    # 每次随机取一个
+play sound page_turn    # 依次轮播
+```
+
+重复音效（脚步、翻书、键盘、攻击）每次都播同一个音频会很明显，随机/轮播选取让重复播放更自然。`define sound_group` 进符号表，`play sound` 指令直接引用组名。
+
+---
+
+### `label alias` — 标签别名
+
+```apy
+label morning_scene alias ["ch1_morning", "morning"]:
+    autumn: "早上好。"
+```
+
+重构时重命名 label 会破坏存档（存档记录的是 label 名）。`alias` 声明兼容别名，引擎在跳转和存档恢复时同时接受别名。
+
+规则：
+- 别名只用于向后兼容，不推荐在新代码中引用别名跳转
+- `axn lint` 检测别名的使用，提示迁移到新名字
+- 别名不进全局符号表（不会在 GUI 的 label 列表里出现），只在跳转解析和存档恢复时参与匹配
+- 跨文件时别名同样有效
+
+---
+
+### `computed` — 派生变量
+
+```apy
+flag:
+    relationship_autumn: int = 50
+    relationship_sophia: int = 30
+    flag_met_autumn: bool = False
+
+computed:
+    total_affection = relationship_autumn + relationship_sophia
+    autumn_route_available = relationship_autumn >= 70 and flag_met_autumn
+    dominant_route = "autumn" if relationship_autumn > relationship_sophia else "sophia"
+```
+
+`computed` 变量只读，每次访问时重新计算，不存入存档（可从基础变量推导）。消除手动维护派生状态的错误。
+
+规则：
+- 只允许出现在文件顶层，与 `flag` 块平级
+- 右值只允许引用 `flag` 声明的变量和简单表达式（算术、比较、三元）
+- 不允许函数调用（保证每次求值无副作用）
+- `axn lint` 检测循环依赖（`computed` 变量相互引用）
+- GUI 变量面板显示计算公式，标注"派生，不存档"
+
+---
+
+### `flag` 扩展声明
+
+```apy
+flag:
+    relationship: int = 50
+        clamp 0 100                      # 赋值时自动 clamp，不需要手动写边界检查
+        on_change: relationship_changed  # 变化时调用（只在通过 set/store 赋值时触发，不轮询）
+
+    player_name: str = ""
+        validate: lambda v: len(v) <= 12    # 不满足时抛 AxnValueError
+        transform: lambda v: v.strip()      # 存入前转换
+
+    volume: float = 0.8
+        clamp 0.0 1.0
+```
+
+`clamp` 是最高频的需求，专门的关键字比 lambda 更清晰。`on_change` 范围限定在明确的赋值操作（`set`、`$`、`with store`），不做每帧轮询，实现成本可控。
+
+`validate` 和 `transform` 接受 Python lambda，降级为代码节点，归属关系保留。
+
+`clamp` 在 release 模式下内联为边界检查代码，零运行时开销。
+
+---
+
+### `flag namespace` — 变量命名空间
+
+```apy
+flag namespace autumn:
+    relationship: int = 50
+    first_met: bool = False
+    route: str = ""
+
+flag namespace sophia:
+    relationship: int = 30
+    first_met: bool = False
+
+# 访问
+$ autumn.relationship += 5
+$ sophia.first_met = True
+if autumn.relationship >= 70:
+    jump autumn_route
+```
+
+不强制使用，但大型项目里 flag 变量命名前缀泛滥时（`autumn_relationship`、`sophia_relationship`）命名空间更清晰。
+
+命名空间在 store 内部存为点分隔的 key（`autumn.relationship`），不是嵌套 dict，序列化和访问语义不变。存档兼容性：读档时按完整 key 名恢复，命名空间重构不影响已有存档。
+
+---
+
+### `store` 查询方法
+
+```apy
+$ keys = store.query("inventory", where=lambda i: i["type"] == "key")
+$ sorted_items = store.query("inventory", order_by="rarity", limit=10)
+$ total = store.count("inventory", where=lambda i: i["equipped"])
+```
+
+`Store` 类方法扩展，不引入新脚本语法。视觉小说里对背包、任务列表、解锁内容做查询很频繁，消除重复的 list comprehension 样板。
+
+---
+
+### `store` 变量历史追踪
+
+```apy
+flag:
+    relationship: int = 50
+        track_history max=20         # 记录最近 20 次变化
+
+# 查询
+$ history = store.history("relationship")
+# [{"value": 50, "delta": 0, "timestamp": ...},
+#  {"value": 55, "delta": +5, "reason": "gave_gift", ...}]
+```
+
+`track_history` 是 `flag` 的可选修饰符，不声明则不追踪（零额外开销）。历史记录存入 store，随存档一起保存。用于蝴蝶效应展示、数值变化回顾等叙事场景。
+
+---
+
+### `beat` — 节拍同步
+
+```apy
+play music "bgm/action.ogg" (bpm=128, beats_per_bar=4)
+
+wait beat            # 等到下一个节拍
+wait beat 4          # 等 4 个节拍
+wait bar             # 等下一小节开始
+
+show autumn (transform=jump_in) at beat   # 在下一个节拍触发 show
+camera shake 5 0.3 at beat 2              # 2 个节拍后触发
+```
+
+音乐驱动的演出。现在只能用 `wait N.0` 手动算时间，BPM 变化时要重算所有等待时间。`beat` 让演出和音乐节奏自动对齐，改 BPM 不用改脚本。
+
+实现：`play music` 记录 BPM 和开始时间戳，`wait beat` 计算下一节拍的绝对时间戳等待。BPM 未声明时 `wait beat` 运行时警告并降级为 `wait 0`。
+
+`at beat` 是 `show` / `camera` 等指令的时机修饰符，等效于先 `wait beat` 再执行指令，但不阻塞执行流。
+
+---
+
+### `camera path` — 镜头路径动画
+
+```apy
+define camera_path sweep_panorama:
+    keyframe 0.0: pos (0.1, 0.5) zoom 1.0
+    keyframe 0.5: pos (0.5, 0.5) zoom 1.15
+    keyframe 1.0: pos (0.9, 0.5) zoom 1.0
+    easing ease_in_out
+
+define camera_path zoom_focus(target_pos=(0.5, 0.5)):
+    keyframe 0.0: pos (0.5, 0.5) zoom 1.0
+    keyframe 1.0: pos target_pos  zoom 1.8
+    easing ease_out
+
+camera path sweep_panorama 4.0              # 执行路径动画，4 秒
+camera path sweep_panorama 4.0 (handle=cam_anim)
+wait for cam_anim
+
+camera path zoom_focus(target_pos=(0.3, 0.6)) 2.0
+```
+
+复用 `transform` 的 keyframe 结构，概念统一，实现共享大部分代码。`pos` 为归一化坐标（0.0–1.0）。`camera path` 与 `camera follow` 可共存，`path` 在 `follow` 的基础上叠加偏移。
+
+`define camera_path` 支持参数化（与 `animation` 参数化规则一致），GUI 解析为镜头路径积木块，keyframe 在时间轴编辑器中可视化编辑。
+
+---
+
+### `signal` / `on signal` — 脚本层事件总线
+
+```apy
+# 发送信号
+signal "autumn_mood_changed" (mood="angry", intensity=0.8)
+
+# 任意位置监听
+on signal "autumn_mood_changed": (mood, intensity):
+    expression autumn (face=angry)
+    if intensity > 0.5:
+        camera shake 3 0.2
+```
+
+与 UI 层 `emit channel=` 的区别：`signal` 是脚本执行流层面的事件（label 之间、animation 与脚本之间），`emit` 是控件树层面的事件。两者共用同一套底层事件总线，但语义层分开。
+
+规则：
+- `on signal` 只允许出现在文件顶层，与 `on enter` / `on key` 平级
+- 信号在当前 tick 同步分发，不延迟到下一帧
+- `parallel` track 内可以发送和接收信号
+- `animation` 块内只允许发送信号（`signal`），不允许 `on signal` 监听
+- `axn:` 前缀为引擎标准库保留，开发者不应使用
+
+GUI 处理：独立事件钩子面板展示，与 `on enter` / `on key` 并列；发送方和接收方以连线标注关联关系。
+
+---
+
+### `#region` / `#endregion` — 代码折叠
+
+```apy
+#region 第一章：清晨
+
+label morning_scene:
+    autumn: "早上好。"
+
+label breakfast_scene:
+    sophia: "今天吃什么？"
+
+#endregion
+
+#region 第一章：下午
+
+label afternoon_scene:
+    ...
+
+#endregion
+```
+
+纯注释，不影响解析和执行。编辑器和 IDE 插件（VSCode 扩展）支持折叠区域，大型脚本文件结构管理用。引擎在 `#region` / `#endregion` 不匹配时输出警告（不报错）。
+
+
+---
+
+## 渲染层扩展
+
+### `mask` — 遮罩合成
+
+```apy
+show autumn (mask="assets/masks/spotlight.png")
+# autumn 只在 mask 不透明区域内显示，实现聚光灯、窗帘遮挡效果
+
+show bg_room (mask=store["reveal_mask"], mask_mode=reveal)
+# mask 随时间变化，实现擦除/显现效果
+
+show effect_overlay (mask="masks/vignette.png", mask_mode=invert)
+```
+
+`mask` 与 `color_matrix` 同级，作为显示对象的独立后处理属性，可与 `transform` 同时存在。
+
+| `mask_mode` | 行为 |
+|------------|------|
+| `alpha`（默认） | mask 的 alpha 通道控制显示区域 |
+| `reveal` | mask 亮度控制显示进度（擦除效果） |
+| `invert` | 反向遮罩，mask 不透明处隐藏 |
+
+`mask` 动画化：
+
+```apy
+show autumn (mask="masks/spotlight.png", mask_transition=0.5)
+# 0.5 秒内从当前 mask 过渡到新 mask（线性插值）
+```
+
+Round-Trip：`mask=` 在 `show` 积木块中显示为独立遮罩字段，`mask_mode` 下拉选择，`mask_transition` 时间字段可选。
+
+---
+
+### `render_texture` — 离屏渲染
+
+```apy
+render_texture as scene_tex:
+    show bg_room
+    show autumn center
+    show sophia right
+
+# 对合成结果整体做处理
+show scene_tex (color_matrix=grayscale, transform=shake_x)
+
+# 复用纹理
+show scene_tex left
+show scene_tex right (color_matrix=TintMatrix(#8888ff, 0.3))
+```
+
+将一组对象渲染到离屏纹理，再对纹理整体做处理。比 `layer transform` + `layer color_matrix` 更灵活——可以跨层组合，可以复用纹理，可以做后处理链。
+
+`render_texture` 块内只允许 `show` / `hide` / `expression` 等显示控制指令，不允许对话行、Python 块、跳转指令。纹理在 `render_texture` 块执行时一次性合成，不随内容实时更新——如需实时跟踪显示状态，改用 `layer transform`。
+
+---
+
+### `show` 的 `blend` 模式
+
+```apy
+show effect_overlay (blend=screen)      # 滤色（发光、光晕）
+show effect_overlay (blend=multiply)    # 正片叠底（阴影、压暗）
+show effect_overlay (blend=add)         # 相加（强发光）
+show effect_overlay (blend=overlay)     # 叠加（对比度增强）
+show effect_overlay (blend=screen, alpha=0.7)   # 混合模式 + 透明度
+```
+
+内置混合模式：
+
+| 值 | 用途 |
+|----|------|
+| `normal`（默认） | 标准 alpha 混合 |
+| `screen` | 滤色，发光、光晕特效 |
+| `multiply` | 正片叠底，阴影、染色 |
+| `add` | 相加，强发光、火焰 |
+| `overlay` | 叠加，对比度增强 |
+| `darken` | 取暗 |
+| `lighten` | 取亮 |
+| `color_dodge` | 颜色减淡 |
+| `color_burn` | 颜色加深 |
+
+Pygame 后端通过 `special_flags` 实现，Qt 后端通过 `QPainter::CompositionMode` 实现，引擎层统一封装。
+
+---
+
+### `define particle` — 粒子系统
+
+```apy
+define particle snow:
+    texture "fx/snowflake.png"
+    count 200
+    spawn_area (fill, top)                   # 从顶部整个宽度生成
+    velocity (random(-20, 20), random(30, 80))
+    lifetime random(3.0, 6.0)
+    fade_in 0.5
+    fade_out 1.0
+    rotation random(0, 360)
+    rotation_speed random(-30, 30)
+    scale random(0.5, 1.5)
+    wind (5, 0)                              # 全局风力偏移
+
+define particle sakura extends snow:
+    texture "fx/petal.png"
+    velocity (random(-30, -10), random(20, 50))
+    wind (-8, 0)
+    scale random(0.3, 0.8)
+
+define particle magic_sparkle:
+    texture "fx/sparkle.png"
+    count 50
+    spawn_area (center, 0.5, 0.5)            # 从指定位置生成
+    spawn_radius 30                           # 生成半径（像素）
+    velocity (random(-40, 40), random(-60, -20))
+    gravity (0, 20)                           # 重力
+    lifetime random(0.5, 1.5)
+    fade_in 0.1
+    fade_out 0.5
+    scale random(0.5, 1.0)
+    color_cycle ["#ffffff", "#ffdd88", "#ff8800"]   # 颜色随时间循环
+```
+
+`define particle` 进符号表，使用方式与 `show` 统一：
+
+```apy
+show particle snow (layer=effect)
+show particle snow (layer=effect, alias=snow_1)
+hide particle snow 2.0
+expression particle snow (count=50)    # 运行时修改参数
+```
+
+粒子参数：
+
+| 参数 | 说明 |
+|------|------|
+| `texture` | 粒子贴图路径 |
+| `count` | 同时存在的最大粒子数 |
+| `spawn_area` | 生成区域：`(fill, top/bottom/left/right)` / `(center, x, y)` / `(rect, x, y, w, h)` |
+| `spawn_radius` | 生成半径（配合 `center` 使用） |
+| `spawn_rate` | 每秒生成粒子数，省略时按 count 和 lifetime 自动计算 |
+| `velocity` | 初速度 `(x, y)`，支持 `random(min, max)` |
+| `gravity` | 重力加速度 `(x, y)` |
+| `wind` | 风力（对所有粒子施加的额外速度） |
+| `lifetime` | 粒子生命周期（秒），支持 `random(min, max)` |
+| `fade_in` | 淡入时间（秒） |
+| `fade_out` | 淡出时间（秒） |
+| `rotation` | 初始旋转角度，支持 `random(min, max)` |
+| `rotation_speed` | 旋转速度（度/秒），支持 `random(min, max)` |
+| `scale` | 缩放，支持 `random(min, max)` |
+| `color_cycle` | 颜色列表，粒子在生命周期内循环过渡 |
+
+`define particle` 支持 `extends` 继承，子类覆盖父类同名参数。GUI 解析为粒子系统配置积木块，参数列表完整可编辑，编辑器内提供实时粒子预览。
+
+
+---
+
+## 音频系统扩展
+
+### `music_transition` — BGM 切换策略
+
+```apy
+# 现有写法（仍然有效）
+stop music 1.0
+play music "bgm/new.ogg" 0.8 1.0
+
+# 扩展写法：在 play 上声明切换策略
+play music "bgm/new.ogg" (transition=crossfade 1.5)
+play music "bgm/new.ogg" (transition=stinger "bgm/sting.ogg")
+play music "bgm/new.ogg" (transition=wait_bar)
+play music "bgm/new.ogg" (transition=cut)
+```
+
+| transition 类型 | 行为 |
+|----------------|------|
+| `cut`（默认） | 立即切换 |
+| `crossfade N` | 旧 BGM 淡出同时新 BGM 淡入，持续 N 秒 |
+| `stinger "path"` | 先播过渡音效，结束后接新 BGM |
+| `wait_bar` | 等当前 BGM 播完当前小节再切换（需要 BPM 信息） |
+
+`stinger` 走独立的内部通道，不影响 music 通道的队列状态。
+
+---
+
+### `audio_bus` — 音频总线
+
+```apy
+# options_window.apy
+define audio_bus master:
+    volume 1.0
+
+define audio_bus music_bus:
+    parent master
+    volume 0.8
+    effects [reverb(room=0.1, damp=0.5)]    # 总线级效果
+
+define audio_bus sfx_bus:
+    parent master
+    volume 1.0
+
+define audio_bus voice_bus:
+    parent master
+    volume 1.0
+    effects [compressor(threshold=-6, ratio=3)]   # 人声压缩
+
+engine:
+    audio:
+        channel_bus:
+            music   = music_bus
+            ambient = music_bus
+            sound   = sfx_bus
+            voice   = voice_bus
+```
+
+总线层级结构：`master` 为根总线，调整 `master.volume` 影响所有音频输出。`music_bus.volume` 同时影响 music 和 ambient 两个通道，符合游戏音频的实际工作流。
+
+脚本层访问：
+
+```apy
+$ engine.audio_bus("music_bus").volume = 0.5
+$ engine.audio_bus("master").mute = True
+```
+
+---
+
+### `audio_snapshot` — 音频状态快照
+
+```apy
+audio_snapshot save "before_cutscene"
+
+play music "bgm/boss.ogg"
+filter music (lowpass(cutoff=800)) 0.5
+
+audio_snapshot restore "before_cutscene" 1.0
+# 1.0 秒内平滑过渡到恢复的状态（音量、滤波器参数线性插值）
+```
+
+保存和恢复所有通道的音频状态（当前播放文件、进度、音量、滤波器参数）。过场动画、模态框弹出/关闭时的音频管理，避免手动记录和恢复。
+
+快照存在内存里，不写磁盘，label 退出时自动清除（与 `snapshot` 规则一致）。
+
+---
+
+### 通道 UI 可见性扩展
+
+```apy
+# options_window.apy
+engine:
+    audio:
+        channels:
+            music:      ui=true
+            sound:      ui=true
+            voice:      ui=true
+            ambient:    ui=locked    # 显示但不可调，只能脚本控制
+            bg_layer:   ui=false     # 完全不在设置界面显示（自定义通道默认值）
+```
+
+自定义通道在 `options_window.apy` 中声明后自动纳入存档管理：
+
+```apy
+engine:
+    audio:
+        custom_channels:
+            bg_layer:
+                default_volume = 0.6
+                loop           = true
+                bus            = music_bus
+```
+
+
+---
+
+## 控件状态系统（完整设计）
+
+### 完整状态机模型
+
+控件状态机覆盖以下状态，视觉（`style`）和行为（事件钩子）统一描述：
+
+```
+idle
+  ↓ mouse_enter / focus_gained
+hovered（可与 focused 叠加）
+  ↓ mouse_down / key_down（space / return）
+pressed（瞬时）
+  ↓ mouse_up on self（在控件内松开）
+  → clicked → 回到 hovered
+  ↓ mouse_up off self（拖出去松开）
+  → cancelled → 回到 idle
+  ↓ 持续按住超过 threshold
+active（长按持续态）
+  ↓ mouse_up
+  → long_clicked → 回到 hovered
+
+selected（静态，由逻辑维护，可与任意状态叠加）
+disabled（排他，覆盖所有其他输入响应；视觉上可与 hovered 叠加用于光标提示）
+```
+
+**`pressed` / `active` / `selected` 的语义区别：**
+- `pressed`：鼠标按下的瞬时态，松开即消失
+- `active`：按住不松的持续态，适合长按类操作
+- `selected`：开发者显式维护的静态选中态，与鼠标操作无关
+
+### 完整状态声明语法
+
+```apy
+gui option_button(label):
+
+    # ── 视觉状态 ──────────────────────────────────────────
+    style:
+        background #444444
+        color #ffffff
+
+        # 单态
+        hovered:
+            background #555555
+            color #ffdd88
+
+        pressed:
+            background #3a3a3a
+            scale 0.97                    # 轻微缩小，按压感
+
+        active:                           # 长按持续态
+            background #1a6622
+            transform pulse
+
+        selected:
+            background #226622
+            border (2, #44ff88)
+
+        focused:
+            border (2, #aaaaff)
+            overlay #ffffff11
+
+        disabled:
+            alpha 0.4
+            overlay #00000033
+
+        # 组合态（优先级自动高于单态）
+        hovered + selected:
+            background #2a8833
+            border (2, #66ffaa)
+
+        focused + disabled:
+            border (2, #666666)
+
+        hovered + disabled:
+            cursor no_drop                # 禁止光标
+
+        # 状态过渡动画
+        transition all 0.1 ease_out       # 所有属性变化的默认过渡
+        pressed -> hovered:
+            transition scale 0.15 bounce  # 定向过渡：松开时有弹性
+
+    # ── 行为事件 ──────────────────────────────────────────
+    on_hover_enter:
+        play sound "sfx/ui_hover.ogg" 0.2
+
+    on_hover_exit:
+        pass
+
+    on_press:
+        play sound "sfx/ui_press.ogg" 0.3
+        $ engine.sdl2.rumble(0.05, 0.1, 30)
+
+    on_click:                             # press + release on self（推荐写法）
+        emit "option_selected" label
+
+    on_cancel:                            # press 后拖出去松开
+        pass
+
+    on_active (interval=0.15):            # 长按持续触发，interval 控制频率
+        emit "option_held" label
+
+    on_long_click (threshold=0.6):        # 长按后松开
+        emit "option_long_selected" label
+
+    on_double_click (interval=0.25):
+        emit "option_double_selected" label
+
+    on_focus:
+        play sound "sfx/ui_focus.ogg" 0.15
+
+    on_blur:
+        pass
+
+    on_key_press (key="return"):          # 焦点在此控件上时的按键响应
+        emit "option_selected" label
+
+    on_key_press (key="space"):
+        emit "option_selected" label
+
+    on_right_click:
+        show screen context_menu (target=label)
+
+    on_middle_click:
+        pass
+
+    # ── 状态变化钩子 ──────────────────────────────────────
+    on_state_enter (state="selected"):
+        play sound "sfx/select.ogg"
+
+    on_state_exit (state="selected"):
+        pass
+
+    on_disabled:
+        pass
+
+    on_enabled:
+        pass
+
+    text label (anchor=center)
+```
+
+### 组合态优先级规则
+
+```apy
+style:
+    background #444444          # 基础（优先级 0）
+    hovered:   background #555555   # 单态（优先级 1）
+    selected:  background #226622   # 单态（优先级 1，后声明优先）
+    hovered + selected:             # 组合态（优先级 2，自动高于所有涉及单态）
+        background #2a8833
+```
+
+不声明组合态时，回退到后声明单态优先的规则（与现有规则一致）。三个及以上状态的组合（如 `hovered + selected + focused`）同样支持，优先级高于任意二态组合。
+
+### 状态过渡动画
+
+```apy
+style:
+    transition all 0.1 ease_out       # 全局默认：所有属性 0.1 秒过渡
+
+    hovered:
+        background #555555
+        transition background 0.08 ease_out   # 单属性覆盖全局
+
+    pressed:
+        scale 0.97
+        transition scale 0.05 ease_in         # 按下要快
+
+    pressed -> hovered:                       # 定向过渡：从 pressed 到 hovered
+        transition scale 0.15 bounce          # 松开有弹性，反向不适用
+
+    hovered -> idle:                          # 鼠标离开时慢慢恢复
+        transition background 0.2 ease_out
+```
+
+`定向过渡（A -> B）`只在从状态 A 切换到状态 B 时生效，优先级高于 `transition all`。
+
+支持过渡的属性：`background`（颜色插值）、`scale`、`alpha`、`border`（宽度+颜色）、`overlay`（透明度）、`color`。不支持过渡的属性（`size`、`font`）直接切换，不报错。
+
+### `bind selected` — 状态绑定表达式
+
+```apy
+gui tab_button(label, tab_id):
+    bind selected = store["active_tab"] == tab_id
+
+    style:
+        background #333333
+        selected: background #226622
+        hovered + selected: background #2a8833
+
+    on_click:
+        $ store["active_tab"] = tab_id
+
+    text label
+```
+
+`bind selected =` 让 `selected` 状态由外部表达式驱动，不需要手动维护。表达式限制为简单比较（与 `when` 条件一致），GUI 完整可解析。
+
+### 拖拽事件完整设计
+
+```apy
+gui inventory_item(item):
+    draggable (data=item):
+        on_drag_start:
+            play sound "sfx/pickup.ogg"
+            $ store["dragging_item"] = item
+
+        on_drag (pos):                    # 拖拽中每帧，pos 为当前坐标
+            pass
+
+        on_drag_end:                      # 拖拽结束（无论是否落在目标）
+            $ store["dragging_item"] = None
+
+        on_drag_cancel:                   # 被取消（Escape、失焦）
+            play sound "sfx/cancel.ogg"
+            $ store["dragging_item"] = None
+
+gui equipment_slot(slot_id):
+    droptarget (accept_type="equipment"):
+        on_drag_enter (data):             # 有效拖拽物进入目标区域
+            play sound "sfx/slot_hover.ogg"
+            emit "slot_highlighted" slot_id
+
+        on_drag_leave:
+            emit "slot_unhighlighted" slot_id
+
+        on_drop (data):
+            $ equip(slot_id, data)
+            play sound "sfx/equip.ogg"
+
+        on_drop_rejected (data):          # 放置但不满足 accept 条件
+            play sound "sfx/denied.ogg"
+```
+
+### 触摸事件（Android）
+
+```apy
+gui swipe_area:
+    on_swipe_left:
+        jump next_scene
+
+    on_swipe_right:
+        jump prev_scene
+
+    on_swipe_up:
+        show screen history_panel
+
+    on_swipe_down:
+        hide screen history_panel
+
+    on_pinch (scale):                     # 双指缩放
+        $ store["zoom"] = clamp(scale, 0.5, 2.0)
+
+    on_tap:                               # 单次点击（触摸版 on_click）
+        pass
+
+    on_long_tap (threshold=0.5):
+        show screen context_menu
+```
+
+`engine.variant("touch")` 为 `true` 时触摸事件才会触发，PC 端静默忽略，不需要条件判断。
+
+### 全局输入事件
+
+与 `on key` 平级，处理连续输入：
+
+```apy
+on mouse_move (pos, delta):
+    $ store["cursor_pos"] = pos
+
+on mouse_wheel (delta):
+    if store["active_panel"] == "map":
+        $ store["map_zoom"] = clamp(store["map_zoom"] + delta * 0.1, 0.5, 3.0)
+
+on gamepad_axis (axis, value):
+    if axis == "left_x":
+        $ store["aim_x"] = value
+    elif axis == "left_y":
+        $ store["aim_y"] = value
+```
+
+只允许出现在文件顶层，与 `on key` 规则一致。`on mouse_move` 在 Auto/Skip 模式下正常触发（不涉及对话推进）。
+
+### 焦点导航完整规则
+
+```apy
+gui menu_panel:
+    focus_group "main_menu"
+    focus_wrap true                   # 到达末尾后回到开头
+    focus_default btn_start
+
+    # 线性导航（Tab 键、手柄上下）
+    focus_order (btn_start, btn_load, btn_settings, btn_exit)
+
+    # 2D 空间导航（手柄方向键）
+    focus_2d:
+        btn_start:    (right=btn_load,     down=btn_settings)
+        btn_load:     (left=btn_start,     down=btn_exit)
+        btn_settings: (up=btn_start,       right=btn_exit)
+        btn_exit:     (up=btn_load,        left=btn_settings)
+```
+
+`focus_order` 只写线性导航，`focus_2d` 只写空间导航，两者可以同时声明，分别处理不同输入设备。
+
+Round-Trip：`focus_group`、`focus_order`、`focus_2d` 在编辑器中以焦点导航面板独立展示，2D 导航以可视化连线图呈现。
+
+
+---
+
+## 内置转场库（完整版）
+
+### 转场分类
+
+```apy
+# ── 淡化类 ────────────────────────────────────────────────
+transition fade 1.0                          # 渐黑再渐亮（默认颜色黑）
+transition fade_black 0.8
+transition fade_white 0.5
+transition fade_color (#ff8800) 1.0          # 自定义颜色
+transition dissolve 0.5                      # 直接交叉溶解，不经过黑色
+transition dip_black 0.5                     # 渐黑（单程，用于场景结尾）
+transition dip_white 0.3
+
+# ── 划像类 ────────────────────────────────────────────────
+transition wipe_left 0.4
+transition wipe_right 0.4
+transition wipe_up 0.4
+transition wipe_down 0.4
+transition wipe_diagonal (angle=45) 0.5      # 斜向划像，angle 为角度
+
+# ── 推移类 ────────────────────────────────────────────────
+transition push_left 0.4                     # 旧场景被推走，新场景推入
+transition push_right 0.4
+transition push_up 0.4
+transition push_down 0.4
+
+# ── 滑入类（新场景动，旧场景不动）─────────────────────────
+transition slide_in_left 0.4
+transition slide_in_right 0.4
+transition slide_in_up 0.4
+transition slide_in_down 0.4
+
+# ── 缩放类 ────────────────────────────────────────────────
+transition zoom_in 0.5                       # 新场景从中心放大进入
+transition zoom_out 0.5                      # 旧场景缩小消失，新场景显现
+transition zoom_in_blur 0.5                  # 带模糊的放大
+transition punch_in 0.3                      # 冲击感放大（overshoot 弹性）
+
+# ── 图形类 ────────────────────────────────────────────────
+transition iris_in 0.5                       # 圆形从中心扩展
+transition iris_out 0.5                      # 圆形向中心收缩
+transition iris_in (pos=(0.3, 0.7)) 0.5      # 从指定位置展开
+transition blinds_h (slats=8) 0.4            # 水平百叶窗
+transition blinds_v (slats=8) 0.4
+transition checkerboard (size=32) 0.5
+transition pixelate 0.4                      # 像素化过渡
+transition ripple 0.6                        # 水波纹
+
+# ── 特效类 ────────────────────────────────────────────────
+transition flash (color=#ffffff, intensity=1.0) 0.2   # 闪光
+transition shake_cut (intensity=10) 0.3               # 抖动后硬切
+transition glitch 0.4                                  # 数字故障感
+transition static 0.3                                  # 电视雪花噪点
+transition dream 0.8                                   # 梦境感（模糊+亮度）
+transition film_burn 0.6                               # 胶片灼烧
+
+# ── 所有转场支持 easing 和 delay 参数 ─────────────────────
+transition fade 1.0 (easing=ease_in_out)
+transition dissolve 0.5 (delay=0.2)          # 延迟开始
+transition push_left 0.4 (easing=ease_out)
+```
+
+### 转场全局配置
+
+```apy
+# options_window.apy
+engine:
+    transition:
+        default_duration  = 0.4
+        default_easing    = ease_in_out
+        reduce_motion     = false    # 无障碍：true 时所有转场时长减半
+```
+
+`reduce_motion` 对应系统级无障碍设置（iOS/Android/Windows 均有对应系统偏好），引擎自动检测系统设置并覆盖此值，开发者也可强制设置。
+
+### `TransitionLibrary.register` 扩展
+
+```python
+# startup 块内注册自定义转场
+startup:
+    python:
+        from axn_plus.apy.transition import TransitionLibrary
+
+        class PageFlip(Transition):
+            def __init__(self, duration=0.6, direction="right"):
+                self.duration  = duration
+                self.direction = direction
+
+            def apply(self, surface, progress):
+                # progress: 0.0 → 1.0，引擎每帧调用
+                angle = progress * 180
+                return self._flip_surface(surface, angle, self.direction)
+
+        TransitionLibrary.register("page_flip", PageFlip)
+```
+
+注册后与内置转场完全等价：
+
+```apy
+scene bg_new_room (with=page_flip)
+scene bg_new_room (with=page_flip(direction="left", duration=0.8))
+```
+
+
+---
+
+## 更新器（Auto-updater）
+
+可选内置模块，开箱即用，不强制。在 `options_window.apy` 中开启后，`flow.apy` 的 `start` label 中设置调用点。
+
+### 配置
+
+```apy
+# options_window.apy
+engine:
+    updater:
+        enabled          = true
+        check_url        = "https://example.com/game/version.json"
+        download_base    = "https://cdn.example.com/game/patches/"
+        channel          = "stable"        # stable / beta
+        check_interval   = 86400           # 秒，0 = 每次启动都检查
+        auto_apply       = false           # true = 下载完直接应用，不询问
+        delta_update     = true            # 增量更新（只下载变化的文件）
+        verify_signature = true            # 校验更新包签名
+        signature_key    = "pubkey.pem"
+        allow_downgrade  = false
+```
+
+### 调用
+
+```apy
+# flow.apy
+label start:
+    call axn::updater.check_and_apply
+    call prologue
+```
+
+### 版本清单格式（服务端 `version.json`）
+
+```json
+{
+    "latest": {
+        "stable": "1.2.0",
+        "beta":   "1.3.0-beta.2"
+    },
+    "versions": {
+        "1.2.0": {
+            "release_date": "2026-01-15",
+            "changelog":    "修复了第三章存档问题，新增语音包支持",
+            "full_package": {
+                "url":    "patches/1.2.0-full.npa",
+                "size":   52428800,
+                "sha256": "abc123..."
+            },
+            "delta_from": {
+                "1.1.0": {
+                    "url":    "patches/1.1.0-to-1.2.0.npa",
+                    "size":   3145728,
+                    "sha256": "def456..."
+                }
+            }
+        }
+    }
+}
+```
+
+### 更新包格式
+
+`.npa` 归档扩展，增加差分支持：
+
+```
+patch.npa
+├── manifest.json      # 操作列表
+├── files/             # 新增或修改的文件
+└── signature.sig      # 更新包签名（Ed25519）
+```
+
+```json
+{
+    "from_version": "1.1.0",
+    "to_version":   "1.2.0",
+    "operations": [
+        {"op": "add",    "path": "main/scripts/ch3_extra.apy",   "sha256": "..."},
+        {"op": "modify", "path": "main/scripts/ch2.apy",         "sha256": "..."},
+        {"op": "delete", "path": "main/scripts/ch2_old.apy"}
+    ]
+}
+```
+
+### 更新 UI（`.apy` 模板，可替换）
+
+```apy
+gui UpdateDialog:
+    dialog:
+        vstack gap=16:
+            text "发现新版本 {store['update_version']}" (font_size=18)
+            text store["update_changelog"] (color=#aaaaaa)
+
+            progress_bar bind=engine.update_progress (width=300)
+                when store["update_state"] == "downloading"
+
+            hstack gap=8:
+                button "跳过此版本" on_click: Return("skip")
+                button "稍后提醒"   on_click: Return("later")
+                button "立即更新"   on_click: Return("update")
+                    when store["update_state"] != "downloading"
+```
+
+### 存档兼容性联动
+
+更新应用后首次启动，自动触发 `persistent` 版本迁移链，对旧存档运行 migration handler，不需要开发者额外处理。
+
+
+---
+
+## 翻译系统（完整设计）
+
+### 三种模式
+
+```apy
+# options_window.apy
+engine:
+    i18n:
+        mode = "renpy"      # Ren'Py 兼容模式
+        # 或
+        mode = "inline"     # Axn-Plus inline 模式
+        # 或
+        mode = "external"   # Axn-Plus external 模式
+```
+
+同一项目内只允许一种模式。混用时警告可 ignore。
+
+---
+
+### Ren'Py 模式
+
+完整复现 Ren'Py 的翻译机制，Ren'Py 项目迁移时现有翻译文件零改动直接使用：
+
+```apy
+# 原始对话
+label morning_scene:
+    autumn "你好。"
+    @ "阳光透过窗户照进来。"
+
+# 翻译块（Ren'Py 风格，放在同文件底部或独立翻译文件）
+translate en morning_scene_0:
+    autumn "Hello."
+
+translate en morning_scene_1:
+    @ "Sunlight streams through the window."
+```
+
+Ren'Py 的 `auto voice` 同样保留：
+
+```apy
+engine:
+    i18n:
+        mode = "renpy"
+    voice:
+        mode       = "renpy"
+        auto_voice = "voice/{id}.ogg"    # Ren'Py 风格自动路径模板
+```
+
+---
+
+### Inline 模式（Axn-Plus 原有设计扩展）
+
+翻译紧邻原文，适合小型项目和自行翻译：
+
+```apy
+label morning_scene:
+    translate zh:
+        autumn: "你好。"
+        @ "阳光透过窗户照进来。"
+
+    translate en:
+        autumn: "Hello."
+        @ "Sunlight streams through the window."
+```
+
+**块级翻译（减少重复）：**
+
+```apy
+translation block "morning_greeting":
+    zh:
+        autumn: "早上好。"
+        @ "阳光透过窗户照进来。"
+    en:
+        autumn: "Good morning."
+        @ "Sunlight streams through the window."
+    ja:
+        autumn: "おはよう。"
+        @ "日光が窓から差し込んでいる。"
+```
+
+同一 block 内所有语言的行数必须一致，否则解析期报错。
+
+**翻译继承（避免重复）：**
+
+```apy
+translate zh-tw extends zh:
+    autumn: "早安。"    # 只覆盖这一条，其余继承 zh
+```
+
+**UI 字符串翻译：**
+
+```apy
+translate strings:
+    zh:
+        "开始游戏"    = "开始游戏"
+        "设置"        = "设置"
+        "退出"        = "退出"
+        "存档槽 {n}"  = "存档槽 {n}"
+    en:
+        "开始游戏"    = "Start Game"
+        "设置"        = "Settings"
+        "退出"        = "Quit"
+        "存档槽 {n}"  = "Save Slot {n}"
+```
+
+---
+
+### External 模式
+
+翻译完全从主脚本分离，放在独立文件里，主脚本只写原文：
+
+```apy
+# ch1.apy — 只写原文，不含任何 translate 块
+label morning_scene:
+    autumn: "你好。"
+    @ "阳光透过窗户照进来。"
+```
+
+```apy
+# strings/en.apy — 由 axn extract-strings 生成，手动填写翻译
+
+# ch1.apy::morning_scene, line 5
+translate en:
+    autumn: "Hello."
+
+# ch1.apy::morning_scene, line 6
+translate en:
+    @ "Sunlight streams through the window."
+```
+
+引擎启动时加载对应语言的翻译文件，覆盖原文。UI 字符串翻译同样独立：
+
+```apy
+# strings/en.apy
+translate strings en:
+    "开始游戏" = "Start Game"
+    "设置"     = "Settings"
+```
+
+**External 模式优势：**
+- 主脚本干净，不混入翻译内容
+- 翻译人员只接触翻译文件，不需要理解 `.apy` 脚本结构
+- 不同语言可以独立版本管理
+- 适合翻译外包工作流
+
+---
+
+### 三种模式对比
+
+| | Ren'Py 模式 | Inline 模式 | External 模式 |
+|---|---|---|---|
+| 翻译位置 | 同文件底部或独立文件 | 紧邻原文 | 完全独立文件 |
+| 主脚本整洁度 | 中 | 低 | 高 |
+| 迁移自 Ren'Py | 直接兼容 | 需转换 | 需转换 |
+| 翻译外包友好度 | 中 | 低 | 高 |
+| 推荐场景 | Ren'Py 迁移 | 小型项目自行翻译 | 多语言商业项目 |
+
+---
+
+### 翻译工具链完整设计
+
+**提取：**
+
+```
+axn extract-strings --lang en --mode renpy
+axn extract-strings --lang en --mode inline
+axn extract-strings --lang en --mode external    # 读取 options_window 配置
+axn extract-strings --lang en --format xlsx      # 表格格式，适合翻译外包
+axn extract-strings --lang en --memory strings/memory.json   # 启用翻译记忆
+```
+
+**导入：**
+
+```
+axn import-strings --lang en --input strings/en.apy
+axn import-strings --lang en --input strings/en.xlsx
+
+# 导入时行为：
+# - 按来源注释（文件 + label + 行号）精确匹配
+# - 源码文本变化的条目标记 #CHANGED，不自动覆盖，需人工确认
+# - 新增条目自动追加
+# - 多余条目（源码已删除）标记 #OBSOLETE，保留不删除
+```
+
+**检查：**
+
+```
+axn check-strings --lang en --strict
+
+[✓] 对话行完整性：247/247 (100%)
+[✓] UI 字符串完整性：89/89 (100%)
+[✗] 插值变量缺失（3 处）：
+    → ch2.apy::battle_scene, line 42
+      原文含 {player_name}，en 译文缺失此插值
+[✗] 翻译块行数不匹配（1 处）：
+    → translation block "ch2_battle"：zh 12行，en 11行
+[⚠] 疑似未翻译（与原文相同，5 处）
+[⚠] 译文长度超原文 150%（8 处，可能导致 UI 溢出）
+[⚠] 标点不一致（3 处）：原文用"。"，译文用"."
+```
+
+**伪翻译：**
+
+```
+axn pseudo-translate --lang debug --length-factor 1.3
+```
+
+将原文字符替换为带变音的拉丁字母，长度为原文 1.3 倍。用途：验证所有文本走了翻译路径、测试 UI 对非 ASCII 字符的支持、测试长文本布局表现。
+
+**迁移工具：**
+
+```
+axn migrate-strings --from renpy --to external --lang en
+# 将现有 Ren'Py 格式翻译块转换为 external 模式独立文件
+```
+
+### 翻译记忆（Translation Memory）
+
+```json
+// strings/memory.json
+{
+    "version": 1,
+    "entries": [
+        {
+            "source":     "你好。",
+            "target":     "Hello.",
+            "lang":       "en",
+            "context":    "greeting",
+            "confidence": 1.0,
+            "uses":       12
+        }
+    ]
+}
+```
+
+相似度高于 `--threshold`（默认 0.85）的字符串自动填充，标注置信度，翻译人员复查而不是从零翻译。
+
+### 混用检测
+
+```
+axn check-strings
+
+[⚠] 检测到翻译模式混用：
+    当前配置：mode = "inline"
+    但检测到以下非 inline 模式的写法：
+    → strings/en.apy 存在（external 模式文件）
+    → ch2.apy line 88：translate en morning_scene_0（renpy 模式格式）
+
+    如需忽略：
+    engine:
+        i18n:
+            ignore_mode_mismatch = true
+```
+
+### 运行时语言切换
+
+```apy
+$ engine.set_language("en")
+$ engine.set_language("en", transition=fade 0.3)   # 带转场
+```
+
+切换时引擎重新渲染所有当前显示的 UI 文本，不需要重载场景。字体回退链随语言重新计算。
+
+### 字体回退链
+
+```apy
+# options_window.apy
+engine:
+    fonts:
+        fallback_chain:
+            - "fonts/main.ttf"
+            - "fonts/cjk_supplement.ttf"    # 主字体缺字时用此字体
+            - "system"                        # 最终回退到系统字体
+```
+
+不同语言字符集要求不同字体，回退链保证不出现方块字。
+
+---
+
+## 语音系统（完整设计）
+
+### 三种模式
+
+```apy
+# options_window.apy
+engine:
+    voice:
+        mode     = "renpy"      # Ren'Py 兼容模式
+        # 或
+        mode     = "content"    # Axn-Plus content 模式
+        # 或
+        mode     = "sequence"   # Axn-Plus sequence 模式
+
+        base_dir = "voice/"
+        auto_play = true
+```
+
+同一项目内只允许一种模式，混用时警告可 ignore。
+
+---
+
+### Ren'Py 模式
+
+完整复现 Ren'Py 的语音机制，手动标注或通过 `auto_voice` 模板自动查找：
+
+```apy
+# 手动标注
+autumn: "你好。" (voice="autumn/autumn_01.ogg")
+autumn: "今天天气不错。" (voice="autumn/autumn_02.ogg")
+
+# auto_voice 模板（options_window.apy 中配置）
+engine:
+    voice:
+        mode       = "renpy"
+        auto_voice = "voice/{character}/{id}.ogg"
+```
+
+`axn extract-voice --mode renpy` 生成带 `voice=` 占位符的脚本副本，开发者手动填入路径。
+
+---
+
+### Content 模式（Axn-Plus 特有）
+
+用对话内容的哈希作为文件名，解决特殊字符和跨平台兼容问题：
+
+```
+voice/
+    autumn/
+        a3f2c1.ogg      # hash("你好。") 的前 6 位
+        b7e4d2.ogg      # hash("今天天气不错。") 的前 6 位
+    sophia/
+        c9f1a3.ogg
+```
+
+**重复对话处理：**
+
+```apy
+autumn: "你好。"           # a3f2c1.ogg
+autumn: "你好。" (happy)   # a3f2c1_happy.ogg（修饰符不同时加修饰符后缀）
+                           # 找不到 _happy 变体时回退到 a3f2c1.ogg，警告可 ignore
+
+# 同一对话块内的重复
+autumn: "你好。"           # a3f2c1.ogg
+@ "她又说了一遍。"
+autumn: "你好。"           # a3f2c1_2.ogg（块内第 2 次出现加序号后缀）
+```
+
+**对配音导演透明（manifest）：**
+
+```
+axn voice-manifest --output voice/manifest.csv
+```
+
+```csv
+hash,   character, text,           file,              status
+a3f2c1, autumn,    "你好。",        autumn/a3f2c1.ogg, found
+b7e4d2, autumn,    "今天天气不错。", autumn/b7e4d2.ogg, missing
+```
+
+配音导演按 `text` 列录音，按 `hash` 列命名文件。
+
+**内容变更检测：**
+
+```
+axn voice-check
+
+[✗] 3 条对话文本已修改，对应语音文件哈希失效：
+    → ch2.apy::battle_scene, line 42
+      旧文本："我不会输的！"  旧文件：autumn/d4a2b1.ogg（仍存在但已失效）
+      新文本："我绝不认输！"  新文件：autumn/e5c3d2.ogg（缺失）
+[⚠] 2 个语音文件存在但未被任何对话行引用（可能是旧版本残留）
+```
+
+---
+
+### Sequence 模式（Axn-Plus 特有）
+
+按 label + 顺序编号，文件名 = 顺序编号（4位）+ 文本哈希（4位）：
+
+```
+voice/
+    morning_scene/
+        0001_a3f2.ogg    # 第 1 条，文本哈希前 4 位
+        0002_b7e4.ogg
+        0003_c9f1.ogg
+```
+
+顺序编号给配音导演看（录制顺序），文本哈希用于变更检测（编号不变但哈希变了说明内容被修改）。
+
+**中间插入对话的处理：**
+
+```
+axn voice-resequence --label morning_scene
+# 重新生成编号，输出重命名操作列表（不自动执行，需要确认）
+
+需要重命名的文件（共 8 个）：
+  morning_scene/0003_c9f1.ogg → morning_scene/0004_c9f1.ogg
+  ...
+执行重命名？[y/N]
+```
+
+**manifest 同样支持：**
+
+```
+axn voice-manifest --mode sequence --label morning_scene
+
+seq,  hash, character, text,           file,                        status
+0001, a3f2, autumn,    "早上好。",      morning_scene/0001_a3f2.ogg, found
+0002, b7e4, sophia,    "你好啊。",      morning_scene/0002_b7e4.ogg, missing
+```
+
+---
+
+### 三种模式对比
+
+| | Ren'Py 模式 | Content 模式 | Sequence 模式 |
+|---|---|---|---|
+| 文件命名 | 开发者手动指定 | 文本哈希 | 顺序编号+哈希 |
+| 对配音导演透明度 | 高（路径直观） | 需要 manifest | 需要 manifest |
+| 剧本修改后稳定性 | 手动维护 | 哈希自动检测 | 编号+哈希双重检测 |
+| 迁移自 Ren'Py | 直接兼容 | 需要转换 | 需要转换 |
+| 推荐场景 | Ren'Py 迁移、精确控制 | 内容稳定的项目 | 按录制顺序交付的项目 |
+
+---
+
+### 对话块内的语音
+
+两种 Axn-Plus 模式下对话块内的语音处理：
+
+```apy
+# Sequence 模式：对话块内继续顺序编号
+with autumn (happy):
+    "第一句。"     # morning_scene/0001_xxxx
+    "第二句。"     # morning_scene/0002_xxxx
+    "第三句。"     # morning_scene/0003_xxxx
+
+# Content 模式：加 _with_N 后缀区分
+with autumn (happy):
+    "第一句。"     # hash("第一句。")_with_1.ogg
+    "第二句。"     # hash("第二句。")_with_2.ogg
+
+# together 块多角色语音（各自目录下独立文件）
+together:
+    autumn: "我们一起说！"    # autumn/hash.ogg
+    sophia: "我们一起说！"    # sophia/hash.ogg
+```
+
+### 混用检测
+
+```
+axn voice-check
+
+[⚠] 检测到 voice 模式混用：
+    当前配置：mode = "content"
+    但检测到以下非 content 模式的文件结构：
+    → morning_scene/0001_a3f2.ogg（sequence 模式文件结构）
+    → ch2.apy line 42：voice="autumn_01.ogg"（renpy 模式手动标注）
+
+    如需忽略：
+    engine:
+        voice:
+            ignore_mode_mismatch = true
+```
+
+---
+
+## 字幕系统
+
+### 基础配置
+
+```apy
+# options_window.apy
+engine:
+    subtitles:
+        enabled        = false           # 默认关闭，玩家在设置里开启
+        show_for_auto  = true            # Auto 模式下强制显示
+        position       = "bottom_center"
+        style          = subtitle_default
+        sync_mode      = "voice"         # voice / text / both
+```
+
+`sync_mode`：
+
+| 值 | 行为 |
+|----|------|
+| `voice` | 字幕跟随语音时长显示和消失 |
+| `text` | 字幕跟随打字机效果 |
+| `both` | 语音和文字都完成后才消失 |
+
+### 字幕内容控制
+
+```apy
+autumn: "你好。" (voice="001")
+# 字幕内容 = 对话文本（默认）
+
+autumn: "……" (voice="001", subtitle="她沉默地点了点头。")
+# 语音是叹气声，字幕是描述性文字
+
+autumn: "你好。" (voice="001", no_subtitle)
+# 不显示字幕
+```
+
+### 多语言字幕
+
+字幕自动跟随当前界面语言，voice 是否跟随语言切换由 `voice_follow_lang` 控制：
+
+```apy
+# options_window.apy
+engine:
+    voice:
+        voice_follow_lang = false    # false = 语音始终用原始语言（如日语配音+中文字幕）
+```
+
+### 外挂字幕文件
+
+```apy
+# options_window.apy
+engine:
+    subtitles:
+        external_file    = "subtitles/{lang}.srt"    # SRT / VTT 均支持
+        prefer_external  = false    # true = 优先用外挂字幕，找不到才用内嵌
+```
+
+允许不修改游戏本体的情况下替换字幕，适合玩家自制字幕或无障碍字幕。
+
+
+---
+
+## 工具链扩展
+
+### `axn doctor` — 项目健康检查
+
+```
+axn doctor
+
+[✓] flow.apy 存在，start label 已定义
+[✓] options_window.apy 存在，最小配置完整
+[✗] 7 个资源文件在脚本中引用但不存在
+    → assets/autumn/angry.png (scene.apy:42)
+    → bgm/battle.ogg (ch2.apy:18)
+[✗] 3 个 label 被 jump/call 但未定义
+    → route_c (scene.apy:87)
+[⚠] 2 个 define char 使用了链式继承（超过 2 层）
+[⚠] project.json 缺少 android.package，Android 构建将失败
+[✓] 所有 Saveable 类有 __version__ 声明
+[✓] 翻译完整性：zh 100%，en 87%（缺少 23 条）
+[✓] 语音完整性：94%（缺少 18 条）
+```
+
+比 `axn lint` 更宽，覆盖资源完整性、跳转目标、配置就绪状态、翻译/语音完整性。发布前跑一次，不再靠记忆对照 checklist。
+
+---
+
+### `axn stats` — 项目统计
+
+```
+axn stats
+
+脚本统计：
+  总字数：         142,380 字
+  对话行数：         3,847 行
+  label 数：           234 个
+  分支节点：            89 个
+  平均游玩时长：    ~6.2 小时（按平均阅读速度估算）
+
+角色统计：
+  autumn:    1,203 行（31.3%）
+  narrator:    891 行（23.2%）
+  sophia:      445 行（11.6%）
+
+资源统计：
+  图片：    347 个，总计 284 MB
+  音频：     89 个，总计 156 MB
+  视频：     12 个，总计 1.2 GB
+```
+
+用途：了解项目规模、对外宣传（"50万字剧情"）、估算配音成本、制定本地化预算。字数统计去除标签和插值，只统计实际文本。
+
+---
+
+### `axn export-dialogue` — 对话导出
+
+```
+axn export-dialogue --format xlsx --output dialogue_export.xlsx
+axn export-dialogue --format csv  --output dialogue_export.csv
+axn export-dialogue --format json --output dialogue_export.json
+```
+
+导出全部对话为表格，列：文件、label、行号、角色、文本、语音路径（如有）、表情修饰符、备注。
+
+用途：
+- 发给配音导演做配音指导（含语音路径占位符）
+- 发给翻译人员（比 `axn extract-strings` 更完整，含上下文）
+- 字数统计和预算计算
+- QA 检查对话内容
+
+---
+
+### `axn diff-save` — 存档对比
+
+```
+axn diff-save save_old.axnsave save_new.axnsave
+
+store 差异：
+  relationship.autumn:  50 → 75  (+25)
+  flag_agreed:          False → True
+  day:                  3 → 5  (+2)
+  inventory:            [] → [{"id": "key_001", ...}]  (1 项新增)
+```
+
+比较两个存档的 store 差异，调试分支路由问题时比在代码里加 log 干净。
+
+---
+
+### `axn profile` — 性能分析
+
+```
+axn profile --label morning_scene
+
+执行分析（label: morning_scene）：
+  总耗时：       2,847 ms
+  资源加载：       342 ms（12.0%）
+    → autumn_happy.png:  89 ms（首次加载）
+    → bg_room.png:       43 ms（首次加载）
+  渲染帧：       1,203 ms（42.2%）
+    → 最慢帧：   18 ms（第 42 帧，show autumn 触发布局重算）
+  脚本执行：        87 ms（3.1%）
+  等待用户输入：  1,215 ms（42.7%）
+
+内存峰值：       187 MB
+```
+
+视觉小说的性能问题通常集中在特定场景，全局 profiling 噪声太大。`--label` 参数聚焦到具体场景分析。
+
+---
+
+### `axn check` — 存档兼容性预检
+
+```
+axn check --save saves/slot1.axnsave
+
+[✓] 存档版本：1.1.0，当前版本：1.2.0
+[✓] 所有 label 仍然存在（存档执行位置有效）
+[✗] 3 个 flag 变量在存档中存在但新代码已删除：
+    → old_debug_flag（可能误删，请确认）
+    → temp_test_var
+    → ch1_placeholder
+[⚠] 2 个新增 flag 在存档中缺失（将用默认值补齐）：
+    → autumn_voice_heard: bool = False
+    → dlc1_unlocked: bool = False
+[✓] 所有 Saveable 类版本匹配
+```
+
+在发布新版本前检查对旧存档的兼容性，不等到玩家读档时才暴露问题。
+
+---
+
+### `axn trace` — 执行追踪
+
+```
+axn trace --label morning_scene --output trace.json
+```
+
+记录一次完整 label 执行的所有指令、store 变化、资源加载事件，输出结构化 trace 文件。配合 `axn diff-save` 用于复现 bug，比加 log 精确，比 debugger 方便。
+
+---
+
+### `axn lint` 扩展检查项
+
+在现有基础上追加：
+
+- 未使用的 `define position`、`define group`、`define sound_group`
+- `label alias` 中被引用的别名（提示迁移）
+- `computed` 变量的循环依赖
+- `defer` 块内包含对话行（报错）
+- `once` 块的唯一标识冲突（同文件同行号）
+- `#region` / `#endregion` 不匹配
+- `beat` 指令但当前 music 未声明 BPM
+- `signal` 发出但没有任何 `on signal` 监听（可能是遗漏，警告可 ignore）
+
+---
+
+## 引擎核心补充
+
+### 存档槽元数据查询 API（扩展）
+
+```python
+engine.save_slots()
+# 返回：[{
+#   "slot":      "slot1",
+#   "timestamp": 1716480000,
+#   "label":     "morning_scene",
+#   "chapter":   "第一章",
+#   "thumbnail": "cache/thumbnails/slot1.png",
+#   "playtime":  3672,    # 秒
+#   "version":   "1.2.0"
+# }, ...]
+
+engine.save_slot_info(slot)
+engine.save_exists(slot)
+engine.delete_save(slot)
+engine.copy_save(from_slot, to_slot)    # 新增：存档复制
+```
+
+---
+
+### 游戏内计时器（扩展）
+
+```python
+engine.timer.start("battle_timer")
+engine.timer.elapsed("battle_timer")     # float，已过秒数
+engine.timer.pause("battle_timer")
+engine.timer.resume("battle_timer")
+engine.timer.stop("battle_timer")
+engine.timer.reset("battle_timer")
+engine.timer.remaining("battle_timer", total=60.0)  # 新增：倒计时剩余秒数
+```
+
+计时器状态自动纳入存档快照，读档后恢复，无需开发者手动处理。
+
+---
+
+### `persistent` 版本迁移钩子（补充）
+
+迁移按版本号顺序链式执行，跨多个版本时自动串联：
+
+```python
+# options_window.apy 的 startup (before): 块中注册
+engine.persistent.register_migration(
+    from_version = 1,
+    to_version   = 2,
+    handler      = migrate_v1_to_v2
+)
+
+engine.persistent.register_migration(
+    from_version = 2,
+    to_version   = 3,
+    handler      = migrate_v2_to_v3
+)
+# 从版本 1 读档时自动执行 v1→v2→v3 的完整迁移链
+```
+
+---
+
+## Round-Trip Fidelity 补充（新增语法）
+
+| 新增语法 | GUI 处理方式 |
+|---------|-------------|
+| `after N:` 块 | 脚本区带延迟标签的指令节点，delay 字段可编辑 |
+| `repeat N:` 块 | 脚本区循环积木块，次数字段可编辑，标注"不含对话行" |
+| `defer:` 块 | label 节点底部的退出清理区域，标注"离开时执行" |
+| `once per_session/per_playthrough/ever` | 带生命周期标签的条件节点，下拉选择三种生命周期 |
+| `rollback fence:` | 脚本区回滚边界节点，标注"玩家无法回滚到此点之前" |
+| `unwind` / `unwind to` | 脚本区栈展开节点，目标 label 字段可选 |
+| `snapshot "name"` / `restore "name"` | 脚本区状态快照节点，name 字段可编辑 |
+| `define position` | 位置定义面板，坐标预览可视化；show 积木块位置下拉同时显示具名位置 |
+| `define group` | 角色组定义面板，成员列表可编辑；show/hide/expression group 对应积木块 |
+| `define sound_group` | 音效组定义面板，文件列表可编辑，mode 下拉选择 random/cycle |
+| `label alias` | label 节点显示别名列表，标注"向后兼容，不推荐引用" |
+| `computed:` 块 | 变量面板独立区域，公式字段可编辑，标注"派生，不存档" |
+| `flag clamp` | flag 声明积木块内的约束字段，min/max 可编辑 |
+| `flag on_change` | flag 声明积木块内的回调字段，函数名可编辑 |
+| `flag namespace` | 变量面板以命名空间分组展示 |
+| `flag track_history` | flag 声明积木块内的历史追踪开关，max 字段可编辑 |
+| `store.query()` / `store.history()` | 脚本区代码节点 |
+| `beat` / `wait beat` / `at beat` | 脚本区节拍等待节点；标注"需要当前 music 声明 BPM" |
+| `define camera_path` | 镜头路径定义面板，keyframe 时间轴编辑器，与 transform 编辑器共享 |
+| `camera path` | 脚本区镜头路径节点，路径名下拉选择 |
+| `signal "name"` | 脚本区信号发送节点，信号名字段可编辑 |
+| `on signal "name":` | 独立事件钩子面板，与 on enter/on key 并列；发送方和接收方以连线标注 |
+| `#region` / `#endregion` | 编辑器折叠区域，区域名显示在折叠标签上 |
+| `mask=` | show 积木块中独立遮罩字段，mask_mode 下拉选择 |
+| `render_texture as` | 脚本区离屏渲染节点，块内 show 指令列表可编辑 |
+| `blend=` | show 积木块中混合模式字段，下拉选择内置混合模式 |
+| `define particle` | 粒子系统配置积木块，参数完整可编辑，编辑器内实时粒子预览 |
+| `show particle` / `hide particle` | 脚本区粒子显示/隐藏节点，与普通 show/hide 同类 |
+| `play music (transition=crossfade N)` | 音频积木块内的切换策略字段，下拉选择 cut/crossfade/stinger/wait_bar |
+| `define audio_bus` | 音频总线定义面板，层级树状展示，effects 列表可编辑 |
+| `audio_snapshot save/restore` | 脚本区音频快照节点，name 字段可编辑 |
+| 控件事件钩子（`on_hover_enter` 等） | 控件节点上的事件面板，各事件钩子独立可编辑代码块 |
+| `on_active (interval=)` | 事件面板中的持续触发字段，interval 可编辑 |
+| `on_long_click` / `on_double_click` | 事件面板独立字段，threshold/interval 可编辑 |
+| `on_state_enter/exit (state=)` | 事件面板状态变化钩子，state 下拉选择六态 |
+| 组合态（`hovered + selected`） | 样式编辑器中以 `+` 分隔的组合状态标签，优先级自动标注高于单态 |
+| 定向过渡（`pressed -> hovered`） | 样式编辑器中的定向过渡字段，source/target 状态下拉选择 |
+| `bind selected =` | 控件节点 selected 绑定字段，表达式可编辑 |
+| 拖拽事件（`on_drag_start` 等） | draggable/droptarget 积木块中的完整事件面板 |
+| 触摸事件（`on_swipe_*` / `on_pinch`） | 触摸区域积木块的事件面板，标注"仅 touch 平台有效" |
+| `on mouse_move` / `on mouse_wheel` / `on gamepad_axis` | 独立事件钩子面板，与 on key 并列 |
+| `focus_2d:` | 焦点管理面板中的 2D 导航可视化连线图 |
+| 内置转场完整分类 | 转场选择器按分类（淡化/划像/推移/滑入/缩放/图形/特效）分组展示 |
+| `transition A -> B:` 定向过渡 | 样式编辑器定向过渡字段 |
+| `transition all N easing` | 样式编辑器全局过渡字段 |
+| 更新器配置 | options_window.apy 专属更新器配置面板 |
+| 翻译三种模式 | 编辑器翻译面板顶部显示当前模式标签；Ren'Py 模式显示兼容标记 |
+| `translation block` | 翻译面板中的块级翻译节点，多语言标签页并排展示 |
+| `translate zh-tw extends zh` | 翻译继承关系标注，继承来源语言显示为灰色 |
+| `translate strings` | 翻译面板独立 UI 字符串区域 |
+| 语音三种模式 | 语音面板顶部显示当前模式标签 |
+| `axn voice-manifest` 生成的 manifest | 语音面板中集成 manifest 预览，缺失文件高亮标红 |
+| 字幕配置 | options_window.apy 专属字幕配置面板，sync_mode 下拉选择 |
+| `subtitle=` / `no_subtitle` 修饰符 | 对话积木块上的字幕控制字段 |
+
+
+---
+
 ## 不是什么
 
 - 不是 Ren'Py 的分支或 fork
