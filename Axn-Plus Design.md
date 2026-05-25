@@ -2017,8 +2017,6 @@ on key "escape":
 | 存档前 | `on before_save` | 存档写入前，适合清理临时变量 |
 | 读档后 | `on after_load` | 读档完成后、执行流恢复前，适合重建显示状态 |
 
-`on change`（响应式变量监听）因实现成本高，暂不支持，后续考虑。
-
 ---
 
 #### 模块化与复用
@@ -2635,25 +2633,23 @@ flag:
 
 **`set` 指令**：推荐写法，不强制。`$` 永远可用。`set` 修改未在 `flag` 块声明的变量时，引擎输出警告（与引用未声明变量一致）。`set` 的存在价值是让 GUI 能追踪变量归属，`$` 的存在价值是不限制 Python 能力，两者定位不重叠。
 
-**`checkpoint`**：引擎指令层语法，GUI 完整解析为存档点积木块。`thumbnail=current` 表示截取当前帧作为存档缩略图，为引擎保留关键字，不暴露为 Python 值。存档时 call 栈被丢弃，读档后以 checkpoint 下一行作为新的顶层执行起点。`checkpoint` 出现在被 `call` 的子 label 里时引擎给出编译期警告，建议移至顶层 label 入口处。
+**`checkpoint`**：引擎指令层语法，GUI 完整解析为存档点积木块。`thumbnail=current` 表示截取当前帧作为存档缩略图，为引擎保留关键字，不暴露为 Python 值。存档时完整序列化 call 栈，读档后从记录的精确 PC 位置继续执行，不从 label 入口重跑。`checkpoint` 可以出现在任意位置，包括被 `call` 的子 label 里。
 
-**`checkpoint` 存档时机**：存档在 `checkpoint` 指令执行时触发，记录的恢复起点是 `checkpoint` 的**下一行**。读档后直接从该行开始执行，`checkpoint` 指令本身不重新执行，不触发二次存档。
+**`checkpoint` 存档时机**：存档在 `checkpoint` 指令执行时触发，记录的恢复起点是 `checkpoint` 的**下一条指令**的 PC。读档后直接从该位置继续执行，`checkpoint` 指令本身不重新执行，不触发二次存档。
 
 `checkpoint` 之前已发生的副作用（外部 API 调用、不可逆操作等）读档后不会重新执行。需要在读档后重现的副作用，应放在 `checkpoint` 之后——读档后这些代码会正常执行。
 
-**`checkpoint` 与 `call` 栈**：`checkpoint` 存档时 call 栈被丢弃，读档后以 checkpoint 下一行作为新的顶层执行起点，不尝试恢复调用关系。因此强烈建议将 `checkpoint` 放在顶层 label 入口处，不要放在被 `call` 的子 label 里。引擎对后者给出编译期警告：
+**`checkpoint` 与 `call` 栈**：存档时完整序列化整个 call 栈（每个 frame 的 label 名 + PC），读档后精确重建调用关系。`checkpoint` 不再有"只能放顶层 label"的限制。call 栈里含有不可序列化 locals 字段时，该字段丢弃并输出警告：
 
 ```
-AxnWarning: 'checkpoint' inside a called label discards the call stack on load.
-  Consider moving 'checkpoint' to the top-level call site instead.
-  Line 3, chapter2_start.apy
+AxnWarning: [save] CallFrame locals contain non-serializable value 'anim_handle'.
+  It will be dropped on save and restored as None.
+  → chapter2_battle label
 ```
-
-此模型与 Ren'Py 一致。开发者需注意：`checkpoint` 之前的副作用（如外部 API 调用）在读档后不会重新执行，有副作用的操作应放在 `checkpoint` 之后。
 
 **`assert`**：语义与 Python `assert` 完全一致，引擎在编译期识别并在 release 模式下剥离。右值允许任意 Python 表达式，消息部分允许 f-string。GUI 以灰色标记表示"此节点在 release 下不存在"。
 
-**`on` 块作用域**：强制顶层定义，不允许出现在 `label` 或任何块内。GUI 在独立事件钩子面板中展示，与脚本流程图完全分离。块内 Python 代码按常规规则降级为代码节点。`on change` 暂不支持，响应式语义对 `store` 代理的实现成本与 GUI 追踪复杂度不值得现阶段引入。
+**`on` 块作用域**：强制顶层定义，不允许出现在 `label` 或任何块内。GUI 在独立事件钩子面板中展示，与脚本流程图完全分离。块内 Python 代码按常规规则降级为代码节点。响应式变量监听需求通过 `triggers` 块（角色/图片对象级）、`signal` / `on signal`（脚本级）、`emit` / `on_event`（UI 级）三种机制覆盖，不提供全局变量监听。
 
 **`on key` 与 `input disable` 的优先级**：`input disable` 生效期间，所有 `on key` 绑定被屏蔽，无例外。`input disable` 的 flag 列表控制屏蔽粒度——需要保留部分按键响应时，通过 flag 精确指定：
 
@@ -2838,7 +2834,7 @@ AxnWarning: [ui] 'draggable' and 'moveable' both declared without 'handle'.
 
 **图片预加载静态分析范围**：编译器只分析静态可知的 `show` / `scene` / `expression` 资源路径（字符串字面量或 `define image` 引用），`$` 前缀动态引用标记为不可预测，不纳入预加载提示表。开发者可用 `preload` 指令手动补充动态场景的预加载。
 
-**音频滤波器参数插值**：`filter music (reverb(room=0.6)) 1.0` 中的过渡时间是在当前参数值和目标参数值之间线性插值，不是渐入渐出。对不同滤波器类型之间的切换（如从 `reverb` 切到 `lowpass`），无法插值，直接切换并输出警告。
+**音频滤波器参数插值**：`filter music (reverb(room=0.6)) 1.0` 中的过渡时间是在**当前正在生效的参数值**和目标参数值之间线性插值，不是渐入渐出。如果当前没有 filter，从"无效果"状态（各参数为零/默认值）插值到目标值。对不同滤波器类型之间的切换（如从 `reverb` 切到 `lowpass`），无法插值，直接切换并输出警告。
 
 **成就 id 唯一性**：`define achievement` 的 id 在引擎启动时检查全局唯一性，冲突时报 `AxnCompileError`。`unlock achievement` 传入未定义的 id 时报 `AxnRuntimeError`（与 `AxnJumpError` 同级别处理）。
 
@@ -3467,8 +3463,12 @@ preferences:
     renderer          = "auto"    # "auto" / "hardware" / "software"
 
     # 无障碍
-    self_voicing      = false     # TTS 自动朗读（见无障碍章节）
-    self_voicing_rate = 1.0       # TTS 语速倍率
+    self_voicing             = false     # TTS 自动朗读（见无障碍章节）
+    self_voicing_rate        = 1.0       # TTS 语速倍率
+    accessibility_high_contrast   = false    # 高对比度模式（视障用户）
+    accessibility_reduce_motion   = false    # 减少动画（前庭障碍用户）
+    accessibility_large_text      = false    # 字体整体放大 1.5x
+    accessibility_reduce_flashing = false    # 禁止高频闪烁效果（频率 > 3Hz 的亮度变化）
 ```
 
 ### 脚本层访问
@@ -3541,11 +3541,69 @@ engine:
 
 两者遵守相同的序列化规则。
 
+### 存档槽模型
+
+```python
+@dataclass
+class SlotMetadata:
+    slot:        str
+    kind:        Literal["manual", "auto", "quick"]
+    timestamp:   float
+    label:       str
+    pc:          int                # 字节码 PC，精确到指令级别
+    chapter:     str | None         # 最近 savepoint/checkpoint 的 title
+    thumbnail:   str | None         # cache/ 下的截图路径
+    playtime:    float              # 秒
+    version:     str                # 游戏版本号
+```
+
+槽位 kind 影响 UI 行为但不影响引擎内部逻辑，统一走同一套序列化路径。
+
+### savepoint 与 checkpoint
+
+两个概念分别承担不同职责：
+
+```apy
+# savepoint：声明"这里安全，可以存档"，不自动触发存档
+# 适合标记合法存档位置，不强制产生自动存档
+savepoint "第二章开始"
+
+# checkpoint：savepoint + 同时触发 autosave
+# checkpoint 是 savepoint 的超集
+checkpoint "第二章开始"
+```
+
+**手动存档**不依赖 `savepoint`/`checkpoint`，行为由配置控制：
+
+```apy
+# options_window.apy
+engine:
+    save:
+        manual_anywhere  = true     # true = 任意位置可手动存（默认，对齐 Ren'Py）
+                                    # false = 只能在 savepoint/checkpoint 处存
+        unsafe_save_warn = true     # manual_anywhere=true 时，非 savepoint 位置存档输出警告
+        quick_save_slot  = "__quicksave__"    # 快速存档固定槽位名
+```
+
+**快速存档/读档**：内置，不需要声明。默认绑定 F5/F9，在 `engine.keymap` 中重映射。快速存档覆盖式写入 `__quicksave__` 槽，不进普通槽位列表，但可在读档界面单独显示。脚本层可以禁用：
+
+```apy
+$ engine.quick_save_enabled = False    # 某些场景禁止快速存档
+```
+
 ### 存档内容清单
 
 存档保存以下状态：
 
-**执行位置**：当前执行到哪一行（label + 行号）。call 栈在存档时丢弃，读档后以 checkpoint 下一行作为新的顶层执行起点。
+**执行位置**：完整的 call 栈，包含每个 frame 的 label 名和 PC（字节码偏移）。读档后精确从中断的指令继续，不从 label 入口重跑。
+
+```python
+@dataclass
+class SavedCallFrame:
+    label_name: str     # 用名字，不用对象引用（热重载后仍然有效）
+    pc:         int     # 字节码 PC
+    locals:     dict    # 只序列化基础类型，不可序列化的字段丢弃并警告
+```
 
 **`store` 状态**：所有游戏变量，包括 `flag` 块声明的变量和通过 `$` 直接写入的变量。
 
@@ -3559,6 +3617,26 @@ engine:
 **音频状态**：各通道当前播放文件、进度、队列、音量及淡入淡出状态。`music` / `ambient` 读档静默恢复，`sound` / `voice` 读档时清空不恢复。
 
 **`persistent`**：跨存档全局数据，独立处理。
+
+### 读档后执行恢复流（完整）
+
+```
+读档触发
+  → 反序列化 store_snapshot → 写入 Store
+  → 执行 persistent 版本迁移链（如有）
+  → 反序列化 display_snapshot → 重建显示状态
+      ├── 普通显示对象：直接重建
+      └── AnimatedSprite：调用 @restorable.__restore__()
+  → 反序列化 audio_snapshot
+      ├── music/ambient：恢复播放进度
+      └── sound/voice：清空不恢复
+  → 重建 call 栈
+      按 label_name 查全局 label 索引，恢复 label_ref 和 pc
+  → 触发 on after_load 钩子（restore=always 的）
+  → 从记录的 pc 继续执行，不从 label 入口重跑
+```
+
+call 栈序列化后，`savepoint`/`checkpoint` 不再需要只能放顶层 label 的限制，可以出现在任意位置。
 
 ### 显示状态重建：分层快照
 
@@ -3604,7 +3682,7 @@ AxnWarning: 'LivePortrait' is not @restorable.
 
 ### `parallel` 块与存档
 
-**`checkpoint` 禁止出现在 `parallel` 块内**：解析期报错。`parallel` 执行中途其他 track 的状态无法完整快照，读档后无法正确重建。
+**`checkpoint` / `savepoint` 禁止出现在 `parallel` 块内**：解析期报错。`parallel` 执行中途其他 track 的状态无法完整快照，读档后无法正确重建。
 
 ```
 AxnParseError: 'checkpoint' is not allowed inside a 'parallel' block.
@@ -3732,6 +3810,13 @@ Axn-Plus 的 UI 系统按后端分为两条路线，Pygame 后端下细分为两
 | `window` | Qt | 声明式控件体系，包一层抽象 | 需要原生级复杂 UI 的项目 |
 
 **后端在项目初始化时选定，之后固定。** Pygame 项目使用 `screen` + `gui`，Qt 项目使用 `window`，两套路线不混用。
+
+**`screen` 与 `gui` 的关系**：两者在引擎层面完全等价，没有技术区别，可以混用，引擎不报错，只要能正常解析。推荐约定（不强制）：
+
+- `screen` → 布局容器，组织整体结构，把各种内容组合成完整 UI 画面
+- `gui` → 承载具体内容的可复用组件
+
+简单界面随意，不用纠结。通常情况下 UI 是整体重做的，而不是手写或修改，因此 `screen` 通常作为骨架容器，`gui` 用来承载具体内容。
 
 ---
 
@@ -6275,13 +6360,50 @@ stop music (clear)      # 停止当前播放并清空队列
 
 ## 编译器与运行时系统
 
-### 编译目标：字节码
+### 编译目标：混合执行模型
 
-`.apy` 文件经三遍扫描生成 AST 后，编译为自定义字节码执行。选择字节码而非直接解释 AST 或生成 Python 代码的理由：
+`.apy` 文件经三遍扫描生成 AST 后，采用**分层处理**策略，而非单一执行路径：
 
-- 存档机制依赖"精确执行位置"，字节码的 PC（程序计数器）天然满足，AST 解释实现起来很别扭
-- `.apy` 的 Python 块已有 `compile()` + `exec()` 设计，字节码方案与之完美兼容
-- 可缓存字节码，对未修改文件跳过重新编译，降低重启开销
+```
+.apy 文件
+    ↓ 三遍扫描
+AST
+    ↓ 编译器
+自定义字节码（引擎指令部分）
+    +
+Python code object（python: 块部分）
+    ↓
+混合 VM
+    ├── 引擎指令：自定义 VM 解释执行
+    └── Python 块：直接 compile() + exec()，结果写回 Store
+```
+
+**为什么不用 CPython 字节码：** `jump`、`call` 等引擎指令无法自然映射到 Python 字节码（跨 label 跳转无法用 `JUMP_ABSOLUTE` 表达），强行映射等于把所有引擎指令变成函数调用，失去语义。存档依赖精确执行位置，CPython frame 的 `f_lasti` 是字节码偏移而非源码行号，版本兼容性也是定时炸弹。
+
+**为什么不纯 AST 解释：** tree-walker 遇到 `DIALOGUE` 等等待点需要"暂停"，递归实现的 walker 调用栈在等待期间展开，无法恢复。用 generator 手搓协程可以做到，但存档时需要手动序列化 generator 状态，代价更高。
+
+**Python 块直接 compile + exec 的优势：**
+
+```python
+# 编译阶段：用 ast.increment_lineno 正确传递行号偏移
+# traceback 自动指向 .apy 源文件，不需要手写行号映射
+tree = ast.parse(python_source)
+ast.increment_lineno(tree, line_offset - 1)
+code = compile(tree, apy_filename, 'exec')
+
+# 运行时：直接 exec，不经过自定义 VM
+exec(code, _exec_globals, frame.locals)
+```
+
+Python 块里的异常 traceback 自动正确指向 `.apy` 源文件对应行，不需要额外处理。
+
+**选择理由总结：**
+
+- 引擎指令的存档位置（PC）天然精确
+- Python 块的行号和错误定位零成本
+- 可缓存字节码，未修改文件跳过重新编译
+- 两套系统各管各的，Python 生态完整能力不受限制
+- 最低 Python 版本要求 3.12（`ast.increment_lineno` 行为更可预测，`co_qualname` traceback 更干净）
 
 ---
 
@@ -8163,7 +8285,7 @@ button "读档" on_click: engine.load(slot=store["selected_slot"])
     "version": "1.0.0",
     "author": "Studio Name",
     "backend": "pygame",
-    "resolution": [1280, 720],
+    "resolution": [1920, 1080],
     "theme": "default",
 
     "build": {
@@ -8202,6 +8324,39 @@ button "读档" on_click: engine.load(slot=store["selected_slot"])
 
 ---
 
+### 多分辨率与 DPI 适配
+
+设计基准分辨率为 **1920×1080**，引擎内置四档标准分辨率，自动缩放到实际屏幕：
+
+| 分辨率 | 说明 |
+|--------|------|
+| 720×480 | 低端设备 |
+| 1280×720 | 中端设备 |
+| **1920×1080** | **默认基准** |
+| 2560×1440 / 3840×2160 | 2K / 4K 高清屏 |
+
+```apy
+# options_window.apy
+engine:
+    display:
+        design_resolution = (1920, 1080)    # 设计基准分辨率，坐标系以此为准
+        scale_mode        = "letterbox"     # letterbox / stretch / expand
+        dpi_scale         = "auto"          # 自动按实际屏幕 DPI 计算，无需手动设置
+        font_scale        = "dpi"           # dpi（跟随 DPI）/ fixed（固定大小）
+```
+
+**坐标系**：所有 `.apy` 脚本和 UI 声明中的坐标均为**逻辑像素**，基准为 `design_resolution`。引擎在渲染时自动换算为物理像素，开发者不需要感知实际屏幕分辨率。
+
+**图片资源**：推荐按 1920×1080 制作素材，引擎缩放时自动处理。如需针对高 DPI 屏提供 2x 素材，在 `main/image/` 下放 `@2x` 后缀版本，引擎自动选择：
+
+```
+main/image/
+    bg_room.png         # 标准版
+    bg_room@2x.png      # 2x 高清版（可选）
+```
+
+---
+
 ## 构建系统
 
 ### 构建维度
@@ -8235,22 +8390,64 @@ axn build --platform=android --runtime=minimal --assets=remote
 
 分三类处理：
 
-**纯 Python 包**（httpx、pyyaml 等）：静态扫描所有 `.apy` 文件的 `python:` 块和 `$` 行，提取 `import` 语句。未出现的包不打入包体。
+**纯 Python 包**（httpx、pyyaml 等）：静态扫描所有 `.apy` 文件的 `python:` 块和 `$` 行，以及项目 `main/` 下所有 `.py` 文件，提取 `import` 语句（用 AST 扫描，不是正则）。未出现的包不打入包体。
 
 **有 C 扩展的 Python 包**（numpy、pillow 等）：同样按 import 扫描决定是否打入，但无法做子模块裁剪，整个 `.so` 都要带上。pillow 例外，按实际用到的图片格式只编译对应 codec。
 
 **系统级 C 库**（FFmpeg、SDL2、Qt）：必须在编译期决定，按下文各节说明裁剪。
 
-静态扫描无法覆盖动态 import（`importlib`、字符串拼接模块名等），开发者通过 `project.json` 补充声明：
+**引擎固定依赖**：无论项目内容如何，以下包始终打入：
+
+```python
+ENGINE_REQUIRED = {
+    "pygame",
+    "pygame.freetype",    # 见下文字体策略
+    # watchdog 只在开发模式，release 剔除
+}
+
+# 按功能开关决定是否打入
+ENGINE_OPTIONAL = {
+    "httpx":    lambda cfg: cfg.fetch_enabled or cfg.downloader_enabled,
+    "jnius":    lambda cfg: cfg.platform == "android",
+    "PySide6":  lambda cfg: cfg.backend == "qt",
+    "pysdl2":   lambda cfg: cfg.extensions_sdl2_native,
+}
+```
+
+**动态 import 处理**：静态扫描覆盖不到 `importlib.import_module()`、`__import__()`、字符串拼接模块名等动态导入方式。处理策略：
 
 ```json
+// project.json
 "build": {
     "include_packages": ["my_dynamic_import_lib"],
     "exclude_packages": ["tkinter"]
 }
 ```
 
-**标准库裁剪**：`--runtime=auto` 下默认排除以下模块（视觉小说项目不需要）：`tkinter`、`turtle`、`unittest`、`pdb`、`idlelib`、`ensurepip`、`lib2to3`。
+`axn build` 时对检测到的动态导入点输出警告并列出位置。`--strict` 模式下动态导入视为构建错误，强制手动声明。
+
+**标准库裁剪**：`--runtime=auto` 下默认排除以下模块：`tkinter`、`turtle`、`unittest`、`pdb`、`idlelib`、`ensurepip`、`lib2to3`。进一步可排除（视项目使用情况）：`email`、`html`、`http`、`urllib`（不用 `engine.fetch` 时）、`xml`、`sqlite3`、`multiprocessing`。潜在节省 15–25 MB。
+
+### Pygame Font 策略
+
+Pygame 有两套字体渲染模块，引擎按项目情况自动选择：
+
+```python
+# asset/font_loader.py
+
+def load_font(path: str | None, size: int):
+    if path is not None:
+        # 项目内置字体文件 → 走 freetype（推荐，渲染质量更好）
+        return pygame.freetype.Font(path, size)
+    else:
+        # 没有内置字体 → 回退系统字体，引擎启动时输出一次警告
+        # AxnWarning: No font file specified, falling back to system font (pygame.font).
+        #   Rendering quality may vary across platforms.
+        #   Consider bundling a font file in your project.
+        return pygame.font.SysFont(None, size)
+```
+
+打包时的处理：项目有内置字体文件时，只打 `pygame.freetype`，剔除 `pygame.font`。没有内置字体时两个都打，同时 `axn build` 输出警告建议内置字体文件。
 
 ### FFmpeg 裁剪
 
@@ -8309,6 +8506,17 @@ axn build --platform=windows --output=portable    # 可执行目录，无需安�
 
 不推荐 `--output=exe`（单文件）：启动时需解压到临时目录，视觉小说启动体验差。
 
+**Windows 误报警告**：未签名的 exe 会被 Windows Defender 启发式检测报毒，这是独立游戏发布的常见问题。短期解法：发布时附上 VirusTotal 扫描链接，向玩家说明情况。长期解法：购买代码签名证书（EV 证书约 300–500 USD/年）对 exe 进行签名，签名后误报率大幅下降。`axn build` 支持签名流程：
+
+```json
+// project.json
+"windows": {
+    "output": "installer",
+    "sign_cert": "certs/mykey.pfx",    // 证书路径（可选）
+    "sign_timestamp": "http://timestamp.digicert.com"
+}
+```
+
 **macOS**
 
 ```
@@ -8316,7 +8524,27 @@ axn build --platform=macos --output=dmg     # DMG 磁盘镜像（默认）
 axn build --platform=macos --output=app     # 只生成 .app bundle
 ```
 
-需要代码签名和公证（Notarization），macOS 14+ 未签名应用会被拦截。通过 `project.json` 的 `macos.sign_identity` 字段配置签名证书，留空时生成未签名版本并输出警告。
+macOS 14+ 未签名应用会被 Gatekeeper 拦截，需要代码签名 + 公证（Notarization）。完整流程：
+
+1. **代码签名**：通过 `project.json` 的 `macos.sign_identity` 配置 Apple Developer 证书，留空时生成未签名版本并输出警告
+2. **Hardened Runtime**：签名时必须启用 Hardened Runtime（`--options runtime`），否则公证失败
+3. **Entitlements**：如果使用了某些系统 API（摄像头、麦克风等），需要对应的 entitlements 文件
+4. **逐文件签名**：`.app` 内的所有 `.so`、`.dylib` 必须先于 `.app` 本身签名，顺序不能错；`axn build` 自动处理签名顺序
+5. **公证**：签名完成后提交到 Apple 公证服务，通常需要 5–15 分钟；`axn build` 自动等待并 staple 公证票据
+6. **公证超时**：Apple 服务器偶尔很慢，`axn build --notarize-timeout 1800`（秒）可延长等待时间
+
+```json
+// project.json
+"macos": {
+    "bundle_id": "com.studio.gamename",
+    "sign_identity": "Developer ID Application: Studio Name (XXXXXXXXXX)",
+    "entitlements": "macos_entitlements.plist",    // 可选
+    "notarize": true,
+    "notarize_apple_id": "dev@studio.com",
+    "notarize_team_id": "XXXXXXXXXX",
+    "notarize_app_password": "@keychain:AC_PASSWORD"    // 从 keychain 读取，不明文写入
+}
+```
 
 **Linux**
 
@@ -8405,6 +8633,50 @@ Ren'Py 默认包体约 60MB（未裁剪 CPython + 完整标准库 + 未裁剪 py
 
 ---
 
+## CJK 文本渲染
+
+CJK（中日韩）文字的断行规则与西文不同，引擎内置处理，不依赖外部插件。
+
+**断行规则（禁则处理）：**
+
+```apy
+# options_window.apy
+engine:
+    text:
+        cjk_line_break      = "strict"    # strict（JIS X 4051，默认）/ loose / none
+        hanging_punctuation = true        # 句号等标点允许悬挂在行末
+        text_justify        = "auto"      # CJK 段落自动两端对齐
+        ruby_gap            = 2           # 注音与正文的间距（px）
+```
+
+**`cjk_line_break` 模式说明：**
+
+| 值 | 行为 |
+|----|------|
+| `strict` | 严格遵守 JIS X 4051，行首/行尾禁则字符完整处理 |
+| `loose` | 宽松模式，只处理最常见的禁则（句号、逗号不在行首）|
+| `none` | 不处理，按字节切行（不推荐，会出现断行异常）|
+
+**行首禁则字符（不能出现在行首）：** `）」』】〉》、。，；：！？…—`
+
+**行尾禁则字符（不能出现在行尾）：** `（「『【〈《`
+
+**字体回退链（字符级）：** 回退粒度为**单个字符**——某个字符在当前字体找不到字形时，才切换到 fallback 字体，而不是按整个文本文件回退。这保证了中英混排的正确显示：
+
+```apy
+# options_window.apy
+engine:
+    fonts:
+        fallback_chain:
+            - "fonts/main.ttf"              # 主字体
+            - "fonts/cjk_supplement.ttf"    # 主字体缺 CJK 字形时补充
+            - "system"                       # 最终回退系统字体
+```
+
+**实现**：`TextRenderer` 在 `pygame.freetype` 层按字符逐一查字形，找不到时走 fallback 链。这是引擎内置行为，开发者只需配置 fallback_chain，不需要手动处理。
+
+---
+
 ## 资源系统补充
 
 ### 扩展名省略
@@ -8460,6 +8732,123 @@ def open_file(path: str):
 
 ---
 
+### Android 生命周期
+
+Android 系统会在各种时机暂停、停止或杀死进程，引擎必须正确响应，否则会导致玩家数据丢失。
+
+**生命周期事件 → 引擎状态映射：**
+
+```
+onPause()
+  → 引擎暂停主循环
+  → 触发挂起存档（如果当前位置安全）
+  → 释放音频焦点
+  → 暂停所有 timer
+
+onResume()
+  → 恢复主循环
+  → 重新申请音频焦点
+  → 恢复 timer（从暂停时间点继续，不是从头）
+
+onStop()
+  → 强制写入 persistent 和 preferences 到磁盘
+  → 释放大块内存资源（视频解码缓冲区等）
+  → 保留 store 在内存
+
+onDestroy() / 系统 kill
+  → 尽力写入当前状态
+  → 不保证完成（Android 可能直接杀进程）
+```
+
+**软键盘与安全区配置：**
+
+```apy
+# options_window.apy
+engine:
+    android:
+        keyboard_resize_mode = "pan"     # pan（默认）/ resize / nothing
+        # pan：画面整体上移，输入框保持可见
+        # resize：布局重新计算（慢，但更正确）
+        # nothing：不处理，开发者自己用 on_keyboard_show 钩子
+
+        safe_area = true    # 自动处理刘海/打孔屏/圆角的安全区
+
+        background_audio = false    # true = 切到后台继续播音乐
+                                    # false = 失去焦点时暂停（默认）
+        audio_focus_mode = "duck"   # duck（降低音量）/ pause / ignore
+
+        memory_warning_threshold = 200    # MB，超过时触发 axn:memory_warning 事件
+```
+
+**安全区（Notch/Cutout）：**
+
+```apy
+gui hud:
+    padding engine.safe_area    # 自动使用安全区边距
+
+# 或者在 options_window.apy 全局配置
+engine:
+    android:
+        safe_area_mode = "auto"    # auto / manual / ignore
+```
+
+---
+
+### Android 输入框焦点问题
+
+**问题：** SDL2 的 `SDL_StartTextInput()` 在某些 Android 版本上调用一次后状态机卡死，后续焦点请求被系统忽略，导致 `input_field` 只能获得一次焦点，之后无法再次激活，也无法手动设置焦点。
+
+**根本原因：** Android 的 View 焦点系统和 SDL2 的事件系统是两套，SDL2 完全绕过了 Android View 树。
+
+**解法：** 引擎维护**虚拟焦点状态机**，不依赖系统焦点，每次激活 `input_field` 时强制重置 SDL2 状态：
+
+```python
+# platform/android_input.py
+class AndroidInputFieldManager:
+    _active_field = None
+    _text_buffer  = ""
+
+    def activate(self, field):
+        if self._active_field and self._active_field is not field:
+            self._active_field.on_blur()
+            SDL_StopTextInput()
+
+        self._active_field = field
+        self._text_buffer  = field.current_value
+
+        # 关键：先强制隐藏再显示，重置状态机
+        imm.hideSoftInputFromWindow(view.getWindowToken(), 0)
+        # 延迟一帧（16ms）等系统处理完 hide，再 show
+        activity.runOnUiThread(lambda: imm.showSoftInput(view, SHOW_FORCED))
+        SDL_StartTextInput()
+
+    def on_text_input(self, text):
+        if self._active_field:
+            self._text_buffer += text
+            self._active_field.set_value(self._text_buffer)
+
+    def on_key_down(self, key):
+        if key == SDLK_BACKSPACE and self._text_buffer:
+            self._text_buffer = self._text_buffer[:-1]
+            self._active_field.set_value(self._text_buffer)
+        elif key == SDLK_RETURN:
+            self.deactivate()
+```
+
+**配置：**
+
+```apy
+# options_window.apy
+engine:
+    android:
+        input_field_mode    = "managed"    # 引擎自己管理焦点状态机（默认，推荐）
+                                           # "native" = 依赖系统焦点（有 bug，不推荐）
+        input_reset_delay_ms = 16          # hide → show 之间的延迟（一帧）
+                                           # 某些机型需要调大到 32 或 50
+```
+
+---
+
 ## 启动器（Axn-Plus Launcher）
 
 Axn-Plus 提供三种交互层，共享同一套业务逻辑，只换前端：
@@ -8485,8 +8874,10 @@ Step 2: 后端选择
         ○ Qt（复杂 UI 需求，包体较大）
 
 Step 3: 分辨率
-        ○ 1280×720（默认）
-        ○ 1920×1080
+        ○ 720×480
+        ○ 1280×720
+        ○ 1920×1080（默认）
+        ○ 2560×1440（2K）
         ○ 自定义
 
 Step 4: 主题
@@ -8553,7 +8944,36 @@ axn test --from-state tests/states/ch2_angry.json --label chapter2_morning
 
 所有开发者工具在发布包（`axn build`）中完全剥离。
 
+---
 
+### 开发模式 vs 发布模式对照表
+
+```
+功能                       开发模式              发布模式
+────────────────────────────────────────────────────────────
+assert                    执行                  剥离（不生成指令）
+AxnTypeError              触发并报错             完全静默
+AxnWarning                终端输出，继续运行      完全静默
+开发者工具（控制台/编导器） 可用                  剥离
+watchdog 热重载            运行                  剥离
+__debug__                 True                  False
+compile optimize          0                     2
+AxnInternalError          完整 Python traceback  错误界面 + crash.log
+资源缺失                   启动时警告，可忽略      按 release_asset_missing 策略处理
+动态 import 警告           输出                  静默
+```
+
+---
+
+### 不在引擎核心范围内的功能
+
+以下功能明确通过外部插件或 `register_command` 接口实现，不集成进引擎核心：
+
+**网络与多人**：排行榜、实时多人、WebSocket 等网络功能。`engine.fetch()` 和 `engine.steam` 提供基础能力，复杂网络功能通过外部插件注册自定义指令实现。
+
+**RTL（从右到左）布局**：阿拉伯语、希伯来语等 RTL 语言支持。整个布局系统（hstack 方向、pin 锚点、scroll 方向）都需要镜像，改动面太大，当前版本不支持。可通过外部插件注册布局相关的自定义指令实现，或等待社区贡献。
+
+**包体加密/混淆**：`.npa` 归档使用自定义二进制格式（格式不透明，无加密），已足够阻挡普通用户。需要加密的项目通过 `axn::archive_crypto` 外部插件实现（XOR 或 AES128），不集成进引擎核心。核心原则：游戏必须能运行意味着解密密钥必须在包体内或可推导，真正的加密方案不存在，插件只提供"提高门槛"的效果。
 
 ---
 
@@ -8960,6 +9380,8 @@ restore "before_choice"
 - `restore` 目标不存在时运行时警告，不报错，静默跳过
 - 与 `with store` 原子块不同：`snapshot/restore` 是手动控制的跨时间线状态管理，不提供自动回滚
 
+**浅拷贝语义**：与 `with store` 的快照机制一致，`snapshot` 保存的是 store 顶层 key 指向的对象引用，而非深拷贝。`restore` 时将这些 key 指回快照保存的旧引用——如果旧对象在快照后被原地修改（如 `dict["key"] = ...`），restore 无法恢复旧对象的内容。需要深度一致性时，先在 `python:` 块构造新对象（如 `new_rel = dict(relationship)`），再让 snapshot 保存新对象的引用。
+
 ---
 
 ### `define position` — 具名位置
@@ -9087,7 +9509,6 @@ computed:
 flag:
     relationship: int = 50
         clamp 0 100                      # 赋值时自动 clamp，不需要手动写边界检查
-        on_change: relationship_changed  # 变化时调用（只在通过 set/store 赋值时触发，不轮询）
 
     player_name: str = ""
         validate: lambda v: len(v) <= 12    # 不满足时抛 AxnValueError
@@ -9097,7 +9518,7 @@ flag:
         clamp 0.0 1.0
 ```
 
-`clamp` 是最高频的需求，专门的关键字比 lambda 更清晰。`on_change` 范围限定在明确的赋值操作（`set`、`$`、`with store`），不做每帧轮询，实现成本可控。
+`clamp` 是最高频的需求，专门的关键字比 lambda 更清晰。
 
 `validate` 和 `transform` 接受 Python lambda，降级为代码节点，归属关系保留。
 
@@ -9395,7 +9816,7 @@ expression particle snow (count=50)    # 运行时修改参数
 | `count` | 同时存在的最大粒子数 |
 | `spawn_area` | 生成区域：`(fill, top/bottom/left/right)` / `(center, x, y)` / `(rect, x, y, w, h)` |
 | `spawn_radius` | 生成半径（配合 `center` 使用） |
-| `spawn_rate` | 每秒生成粒子数，省略时按 count 和 lifetime 自动计算 |
+| `spawn_rate` | 每秒生成粒子数，省略时自动计算：`spawn_rate = count / ((lifetime.min + lifetime.max) / 2)`，目标是在稳定状态下同时存在约 count 个粒子 |
 | `velocity` | 初速度 `(x, y)`，支持 `random(min, max)` |
 | `gravity` | 重力加速度 `(x, y)` |
 | `wind` | 风力（对所有粒子施加的额外速度） |
@@ -9809,6 +10230,20 @@ on gamepad_axis (axis, value):
 ```
 
 只允许出现在文件顶层，与 `on key` 规则一致。`on mouse_move` 在 Auto/Skip 模式下正常触发（不涉及对话推进）。
+
+**手柄热插拔：** 引擎监听 SDL 的 `JOYDEVICEADDED` / `JOYDEVICEREMOVED` 事件，转发为标准引擎事件：
+
+```apy
+on_event channel="global" "axn:gamepad_connected": (index):
+    $ store["gamepad_available"] = True
+    show gui gamepad_hint
+
+on_event channel="global" "axn:gamepad_disconnected": (index):
+    $ store["gamepad_available"] = False
+    hide gui gamepad_hint
+```
+
+`axn:gamepad_connected` / `axn:gamepad_disconnected` 列入引擎标准事件列表（`axn:` 前缀保留）。
 
 ### 焦点导航完整规则
 
@@ -10340,19 +10775,17 @@ engine:
 
 ## 语音系统（完整设计）
 
-### 三种模式
+### 两种模式
 
 ```apy
 # options_window.apy
 engine:
     voice:
-        mode     = "renpy"      # Ren'Py 兼容模式
+        mode     = "renpy"    # Ren'Py 兼容模式
         # 或
-        mode     = "content"    # Axn-Plus content 模式
-        # 或
-        mode     = "sequence"   # Axn-Plus sequence 模式
+        mode     = "axn"      # Axn-Plus 原生模式（index 方案）
 
-        base_dir = "voice/"
+        base_dir  = "voice/"      # 相对于 main/ 目录
         auto_play = true
 ```
 
@@ -10380,130 +10813,145 @@ engine:
 
 ---
 
-### Content 模式（Axn-Plus 特有）
+### Axn 原生模式（index 方案）
 
-用对话内容的哈希作为文件名，解决特殊字符和跨平台兼容问题：
+**核心设计：录制文件名（人类可读）和引擎标识（哈希）通过 `voice/index.json` 解耦，文件本身不改名。**
+
+**目录结构：**
 
 ```
-voice/
+main/voice/
+    index.json              # 哈希 → 文件名映射，axn voice-sync 维护
     autumn/
-        a3f2c1.ogg      # hash("你好。") 的前 6 位
-        b7e4d2.ogg      # hash("今天天气不错。") 的前 6 位
+        ch1_morning_001.ogg    # 配音导演自己命名，可读
+        ch1_morning_002.ogg
+        ch2_battle_001.ogg
     sophia/
-        c9f1a3.ogg
+        ch1_morning_001.ogg
 ```
 
-**重复对话处理：**
+**index.json 格式：**
+
+```json
+{
+    "_version": 1,
+    "autumn": {
+        "a3f2c1d4": "ch1_morning_001.ogg",
+        "b7e4d2f1": "ch1_morning_002.ogg",
+        "c9f1a3e2": "ch2_battle_001.ogg"
+    },
+    "sophia": {
+        "d4b3e2f1": "ch1_morning_001.ogg"
+    }
+}
+```
+
+key 是对话文本的 SHA-256 哈希（取前 8 位），value 是实际文件名。引擎运行时查 index，不扫描目录。
+
+**配置项：**
 
 ```apy
-autumn: "你好。"           # a3f2c1.ogg
-autumn: "你好。" (happy)   # a3f2c1_happy.ogg（修饰符不同时加修饰符后缀）
-                           # 找不到 _happy 变体时回退到 a3f2c1.ogg，警告可 ignore
-
-# 同一对话块内的重复
-autumn: "你好。"           # a3f2c1.ogg
-@ "她又说了一遍。"
-autumn: "你好。"           # a3f2c1_2.ogg（块内第 2 次出现加序号后缀）
+engine:
+    voice:
+        mode         = "axn"
+        naming_style = "sequence"    # 影响 voice-manifest 建议文件名的风格
+                                     # sequence: ch1_morning_001（推荐）
+                                     # label:    morning_scene_001
 ```
 
-**对配音导演透明（manifest）：**
+`naming_style` 只影响 `axn voice-manifest` 生成的建议文件名，不影响引擎内部匹配逻辑。
+
+**工作流：**
+
+第一步，生成录制指南给配音导演：
 
 ```
-axn voice-manifest --output voice/manifest.csv
+axn voice-manifest --output recording_guide.csv
 ```
 
 ```csv
-hash,   character, text,           file,              status
-a3f2c1, autumn,    "你好。",        autumn/a3f2c1.ogg, found
-b7e4d2, autumn,    "今天天气不错。", autumn/b7e4d2.ogg, missing
+character, text,           context,                suggested_name,    status
+autumn,    "早上好。",      ch1.apy::morning, line5, ch1_morning_001,   missing
+autumn,    "今天天气不错。", ch1.apy::morning, line6, ch1_morning_002,   missing
+autumn,    "我不会输的！",   ch2.apy::battle,  line8, ch2_battle_001,    missing
+sophia,    "你好啊。",      ch1.apy::morning, line7, ch1_morning_001,   missing
 ```
 
-配音导演按 `text` 列录音，按 `hash` 列命名文件。
+配音导演录完后，把文件放到对应角色目录，然后运行：
+
+```
+axn voice-sync
+```
+
+扫描目录，通过 manifest 里的对应关系匹配文件名和对话文本，更新 `index.json`：
+
+```
+[✓] 已匹配 45 条
+[?] 以下文件未在 manifest 中找到对应条目（可能是额外录制或文件名有误）：
+    → autumn/ch1_extra.ogg
+[✗] 以下条目仍缺少语音文件：
+    → autumn: "我不会输的！" (ch2.apy::battle, 建议名: ch2_battle_001)
+```
 
 **内容变更检测：**
+
+对话文本改了之后：
 
 ```
 axn voice-check
 
-[✗] 3 条对话文本已修改，对应语音文件哈希失效：
-    → ch2.apy::battle_scene, line 42
-      旧文本："我不会输的！"  旧文件：autumn/d4a2b1.ogg（仍存在但已失效）
-      新文本："我绝不认输！"  新文件：autumn/e5c3d2.ogg（缺失）
+[✗] 3 条对话文本已修改，index 中的哈希失效：
+    → autumn: 旧文本 "我不会输的！" → 新文本 "我绝不认输！"
+      对应文件：autumn/ch2_battle_001.ogg（文件仍存在，但内容已过时）
+      建议：重新录制，或用 --mark-pending 标记为待重录
+
+axn voice-check --mark-pending ch2_battle_001
+# 在 index.json 中标记该条目为 pending
+# 运行时用静音或旧文件兜底（可在 options_window.apy 配置）
 [⚠] 2 个语音文件存在但未被任何对话行引用（可能是旧版本残留）
 ```
 
----
+**脚本层使用不变：**
 
-### Sequence 模式（Axn-Plus 特有）
+```apy
+# voice= 短路径照旧，引擎查 index 而不是直接找文件
+autumn: "早上好。" (voice="001")
+# 引擎：查 autumn 角色的 index，找到 content_hash → 文件路径
 
-按 label + 顺序编号，文件名 = 顺序编号（4位）+ 文本哈希（4位）：
-
-```
-voice/
-    morning_scene/
-        0001_a3f2.ogg    # 第 1 条，文本哈希前 4 位
-        0002_b7e4.ogg
-        0003_c9f1.ogg
-```
-
-顺序编号给配音导演看（录制顺序），文本哈希用于变更检测（编号不变但哈希变了说明内容被修改）。
-
-**中间插入对话的处理：**
-
-```
-axn voice-resequence --label morning_scene
-# 重新生成编号，输出重命名操作列表（不自动执行，需要确认）
-
-需要重命名的文件（共 8 个）：
-  morning_scene/0003_c9f1.ogg → morning_scene/0004_c9f1.ogg
-  ...
-执行重命名？[y/N]
-```
-
-**manifest 同样支持：**
-
-```
-axn voice-manifest --mode sequence --label morning_scene
-
-seq,  hash, character, text,           file,                        status
-0001, a3f2, autumn,    "早上好。",      morning_scene/0001_a3f2.ogg, found
-0002, b7e4, sophia,    "你好啊。",      morning_scene/0002_b7e4.ogg, missing
+# 手动指定完整路径永远有效，绕过 index
+autumn: "早上好。" (voice="ch1_morning_001.ogg")
 ```
 
 ---
 
-### 三种模式对比
+### 两种模式对比
 
-| | Ren'Py 模式 | Content 模式 | Sequence 模式 |
-|---|---|---|---|
-| 文件命名 | 开发者手动指定 | 文本哈希 | 顺序编号+哈希 |
-| 对配音导演透明度 | 高（路径直观） | 需要 manifest | 需要 manifest |
-| 剧本修改后稳定性 | 手动维护 | 哈希自动检测 | 编号+哈希双重检测 |
-| 迁移自 Ren'Py | 直接兼容 | 需要转换 | 需要转换 |
-| 推荐场景 | Ren'Py 迁移、精确控制 | 内容稳定的项目 | 按录制顺序交付的项目 |
+| | Ren'Py 模式 | Axn 原生模式 |
+|---|---|---|
+| 文件命名 | 开发者手动指定 | 配音导演自定义，人类可读 |
+| 引擎标识 | 文件路径 | index.json 中的哈希映射 |
+| 对配音导演透明度 | 高（路径直观） | 高（suggested_name 可读） |
+| 剧本修改后稳定性 | 手动维护 | 哈希自动检测，文件不需要改名 |
+| version control | 改名产生大量 diff | 只有 index.json 变化，干净 |
+| 迁移自 Ren'Py | 直接兼容 | 需要转换 |
+| 推荐场景 | Ren'Py 迁移、精确控制 | 新项目，多人协作，配音外包 |
 
 ---
 
 ### 对话块内的语音
 
-两种 Axn-Plus 模式下对话块内的语音处理：
+Axn 原生模式下对话块内的语音处理：
 
 ```apy
-# Sequence 模式：对话块内继续顺序编号
+# with 块内：各行独立匹配，命名风格加块内序号后缀
 with autumn (happy):
-    "第一句。"     # morning_scene/0001_xxxx
-    "第二句。"     # morning_scene/0002_xxxx
-    "第三句。"     # morning_scene/0003_xxxx
+    "第一句。"     # hash("第一句。") → ch1_morning_001.ogg
+    "第二句。"     # hash("第二句。") → ch1_morning_002.ogg
 
-# Content 模式：加 _with_N 后缀区分
-with autumn (happy):
-    "第一句。"     # hash("第一句。")_with_1.ogg
-    "第二句。"     # hash("第二句。")_with_2.ogg
-
-# together 块多角色语音（各自目录下独立文件）
+# together 块：多角色各自目录下独立文件
 together:
-    autumn: "我们一起说！"    # autumn/hash.ogg
-    sophia: "我们一起说！"    # sophia/hash.ogg
+    autumn: "我们一起说！"    # autumn/ 下匹配
+    sophia: "我们一起说！"    # sophia/ 下匹配（同文本不同角色，各自录制）
 ```
 
 ### 混用检测
@@ -10512,9 +10960,8 @@ together:
 axn voice-check
 
 [⚠] 检测到 voice 模式混用：
-    当前配置：mode = "content"
-    但检测到以下非 content 模式的文件结构：
-    → morning_scene/0001_a3f2.ogg（sequence 模式文件结构）
+    当前配置：mode = "axn"
+    但检测到以下非 axn 模式的写法：
     → ch2.apy line 42：voice="autumn_01.ogg"（renpy 模式手动标注）
 
     如需忽略：
@@ -10695,6 +11142,52 @@ axn profile --label morning_scene
 
 ---
 
+### `axn memory` — 内存诊断
+
+```
+axn memory --label morning_scene
+
+内存快照（label: morning_scene 执行完毕）：
+
+图片缓存：
+  总计：         142 MB / 256 MB（上限）
+  最大单张：     autumn_happy.png → 8.4 MB（4096×4096 RGBA）
+  缓存命中率：   94.2%
+  LRU 淘汰次数：  3 次
+
+音频缓冲：
+  music 通道：   2.1 MB（已解码缓冲）
+  sound 通道：   0.4 MB
+
+Python 对象：
+  store 大小：   84 KB
+  persistent：   12 KB
+
+峰值总内存：     187 MB
+Android 推荐上限：256 MB（中端机型）
+超限警告阈值：   未触发
+```
+
+运行时诊断接口：
+
+```python
+engine.memory.image_cache_usage()    # MB，当前图片缓存占用
+engine.memory.total_usage()          # MB，总内存占用
+engine.memory.gc_collect()           # 强制 GC，调试用
+```
+
+Android 内存警告联动：
+
+```apy
+on_event channel="global" "axn:memory_warning": ():
+    $ engine.memory.gc_collect()
+    $ engine.asset.evict_unused()    # 主动淘汰未使用资源
+```
+
+`axn:memory_warning` 在内存超过 `engine.android.memory_warning_threshold`（默认 200MB）时触发。
+
+---
+
 ### `axn check` — 存档兼容性预检
 
 ```
@@ -10820,7 +11313,6 @@ engine.persistent.register_migration(
 | `label alias` | label 节点显示别名列表，标注"向后兼容，不推荐引用" |
 | `computed:` 块 | 变量面板独立区域，公式字段可编辑，标注"派生，不存档" |
 | `flag clamp` | flag 声明积木块内的约束字段，min/max 可编辑 |
-| `flag on_change` | flag 声明积木块内的回调字段，函数名可编辑 |
 | `flag namespace` | 变量面板以命名空间分组展示 |
 | `flag track_history` | flag 声明积木块内的历史追踪开关，max 字段可编辑 |
 | `store.query()` / `store.history()` | 脚本区代码节点 |
