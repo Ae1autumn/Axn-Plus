@@ -73,11 +73,16 @@ Ren'Py 为了跨平台和易用性，对 Python 做了大量限制和魔改。Ax
 
 **为什么需要三遍而不是两遍**：引入 `define extends` 后，跨文件的继承依赖关系在解析前无法确定顺序——父类定义必须先于子类解析，但依赖关系本身要解析才能知道。三遍扫描将"收集名字"、"建立依赖图"、"完整解析"三个阶段显式分离，避免了解析顺序的不确定性。Ren'Py 通过不支持 `define` 继承来回避这个问题，Axn-Plus 选择支持继承，对应的代价是多一遍轻量扫描。
 
-**`$` 行不支持括号续行**：`$` 后的内容在遇到换行符时立即终止，括号不触发续行。括号不平衡时解析器立即报错并提示改用 `python:` 块，不静默失败。
+**`$` 行括号续行**：`$` 后的内容在遇到换行符时理论上应当终止，但实际上括号不平衡时引擎不阻止运行，而是在解析时输出警告并继续处理——括号续行被当作多行表达式接受，行为在某些上下文中可能未定义。不推荐此写法，推荐改用 `python:` 块。可在 `options_window.apy` 中设置 `ignore_multiline_dollar = true` 静默此警告。
 
 ```
-AxnParseError: Unclosed bracket in '$' line (line 12, scene.apy)
-  Hint: Multi-line Python belongs in a 'python:' block.
+AxnWarning: [parser] '$' line contains multi-line expression.
+  Bracket continuation is allowed but not recommended.
+  Behavior may be undefined in some contexts.
+  → scene.apy, line 12
+
+Hint: Use a 'python:' block for multi-line expressions.
+  Add 'ignore_multiline_dollar = true' in options_window.apy to suppress this warning.
   12 | $ x = (
   13 |     1 + 2
 ```
@@ -145,6 +150,9 @@ define char autumn_casual extends autumn:
 # - layers 模型下的 key 合并也发生在编译期，运行时两个角色的层状态互不共享
 
 # 分层立绘：states 和 layers 二选一，不可混用
+# 混用时引擎启动报错：
+#   AxnParseError: Cannot use both 'states' and 'layers' in the same 'define char'.
+#     → characters.apy, line 8 (define char autumn)
 # states：整图切换模型
 define char sophia:
     name "Sophia"
@@ -220,9 +228,10 @@ autumn: "换装了。" (outfit=casual)
 # 等价于 voice="vo/autumn/001.ogg"（假设 voice_prefix = "vo/autumn/"）
 autumn: "你好。" (voice="001")
 
-# 旁白（三种等价写法，风格自选，同一项目内保持一致）
+# 旁白（单行两种等价写法，风格自选，同一项目内保持一致）
 @ "阳光透过窗户照进来。"
 narrator: "阳光透过窗户照进来。"     # 与角色行对齐，可读性更好
+# 连续旁白使用 narrate: 块（见下文）
 
 # 位置与可见性（show 不控制表情）
 # 指令结构：动词 [子命令] [位置参数...] (具名参数...)
@@ -234,8 +243,8 @@ show autumn (layer=effect)                              # 显式指定层，默�
 
 # 动画句柄：推荐用 handle= 具名参数（推荐写法）
 show autumn left 0.3 (enter=slidein_left, handle=anim_autumn)
-# 保留 as 句柄写法，但引擎警告，可 ignore
-show autumn left 0.3 (enter=slidein_left) as anim_autumn
+# 保留 as 句柄写法，但引擎运行时输出警告，可 ignore
+show autumn left 0.3 (enter=slidein_left) as anim_autumn  # AxnWarning: 建议改用 handle=
 
 # 多实例：同一角色同时出现在多个位置，用 alias= 命名独立实例
 # 不同实例的位置、表情、transform 状态完全独立，互不影响
@@ -244,7 +253,7 @@ show autumn right (alias=right_autumn)
 show autumn (transform=ghost, alias=ghost_autumn)
 hide left_autumn                    # 按 alias 名操作具体实例
 expression left_autumn happy        # 按 alias 名修改表情
-# 同样保留 as 写法但警告：show autumn left as left_autumn
+# 同样保留 as 写法但警告：show autumn left as left_autumn  ← AxnWarning
 
 # hide 位置参数顺序：角色 → duration
 hide autumn                                             # 立即隐藏
@@ -252,7 +261,7 @@ hide autumn 0.5                                         # 指定 duration
 hide autumn 0.5 (exit=fadeout)                          # 补全具名参数
 
 # 多角色并行：同行逗号分隔 = 并行执行，换行 = 串行执行
-show autumn left 0.3 (enter=slidein) as anim_autumn, sophia right 1.0 (enter=slideout) as anim_sophia
+show autumn left 0.3 (enter=slidein, handle=anim_autumn), sophia right 1.0 (enter=slideout, handle=anim_sophia)
 
 # 等待控制
 wait                    # 等用户点击
@@ -274,8 +283,8 @@ scene bg_room (keep=[autumn, sophia])   # 保留多个
 # transition：全屏过渡，不切换任何内容（替代 Ren'Py 独立 with 语句的用途）
 # 位置参数顺序：过渡名 → duration
 transition fade 1.0             # 全屏渐黑再渐亮
-transition black 0.5            # 直接渐黑
-transition white 0.3            # 渐白
+transition fade_black 0.5       # 直接渐黑（不再亮）
+transition fade_white 0.3       # 渐白
 transition dissolve 0.5         # 全屏 dissolve
 # 内置过渡名与 show/hide/scene 的 enter/exit/with 参数共享同一套过渡库
 
@@ -331,7 +340,7 @@ stop music 1.0                          # 指定 fadeout
 # pause / resume（保留进度暂停，与 stop 语义不同）
 # pause 位置参数顺序：fadeout
 pause music                             # 立即暂停
-pause music 0.3                         # 带 fadeout 的暂停（画面渐暗）
+pause music 0.3                         # 带 fadeout 的暂停（音量渐弱）
 resume music                            # 立即恢复
 resume music 0.3                        # 带 fadein 的恢复
 pause video
@@ -345,7 +354,7 @@ pause until flag_ready              # 冻结，条件满足后推进
 pause (freeze_audio=False)          # 冻结画面和动画，音频继续
 
 # pause transform：单个 transform 暂停，保留进度
-show autumn (transform=breathe) as anim_autumn
+show autumn (transform=breathe, handle=anim_autumn)
 pause transform anim_autumn         # 暂停，保留当前帧进度
 resume transform anim_autumn        # 从暂停帧继续
 
@@ -377,7 +386,10 @@ layer destroy effect                    # 销毁层
 layer order sprite effect ui            # 重排层顺序（从下到上）
 
 # say 动词（专用于说话者在运行时动态决定的场景）
-# 静态说话者必须使用 角色: 或 @，用 say 传入静态角色名时报错
+# 静态说话者必须使用 角色: 或 @，用 say 传入静态角色名时解析期报错：
+#   AxnParseError: 'say' with static character name 'autumn'.
+#     Use 'autumn: "..."' syntax instead.
+#     → scene.apy, line 8
 $ speaker = get_current_speaker()
 say speaker "动态说话者。"              # speaker 是 store 变量，运行时求值
 say speaker "下一句。" (happy)          # 修饰符与对话行完全一致
@@ -421,19 +433,22 @@ else:
 
 # 对话框窗口控制
 window show              # 显示对话框容器
-window hide              # 隐藏对话框容器，文字按 hide_behaviour 策略降级渲染
-window hide (all)        # 隐藏整个对话系统（框 + 文字），默认 mode=pause
-window hide (all, mode=pause)   # 遇对话行挂起，window show 后继续显示
+window hide              # 隐藏对话框容器；当有对话行时，文字按 hide_behaviour 配置策略降级渲染
+window hide (all)        # 隐藏整个对话系统（框 + 文字）；此形式通过 mode= 参数控制行为
+window hide (all, mode=pause)   # 遇对话行挂起，window show 后继续显示（默认）
 window hide (all, mode=skip)    # 对话行静默跳过，不计入历史，执行流不停
 window auto              # 有对话时自动 show，无对话时自动 hide（推荐默认）
 
-# window hide 行为在 options_window.apy 中配置：
+# window hide（无 all）的降级行为在 options_window.apy 中全局配置：
 # engine:
 #     window:
 #         hide_behaviour = "overlay"   # 文字叠加在场景上（无背景框），默认
 #         hide_behaviour = "drop"      # 丢弃当前对话内容，静默跳过
 #         hide_behaviour = "error"     # 抛出 AxnWarning，可 ignore
 #         hide_behaviour = "queue"     # 对话排队，window show 后继续
+#
+# hide_behaviour 配置只对 window hide（无 all）生效；
+# window hide (all) 的行为由 mode= 参数直接控制，与 hide_behaviour 无关
 
 # 鼠标光标控制
 # 命令式：脚本流程中随时切换，立即生效
@@ -465,15 +480,23 @@ python:
         item.apply()
 
 # while 循环（rollback= 必须显式声明，否则解析器报错）
+# 缺少 rollback= 时：
+#   AxnParseError: 'while' block requires explicit 'rollback=' parameter.
+#     Rollback behavior is ambiguous for loops containing dialogue.
+#     Recommended: (rollback=none) for most cases.
+#     → scene.apy, line 8
 while hp > 0 (rollback=none):
     autumn: "还没结束！"
     $ hp -= 10
 
-# for 循环（rollback= 必须显式声明）
+# for 循环（rollback= 必须显式声明，理由相同）
 for item in inventory (rollback=none):
     autumn: "我持有了{item.name}。"
 
 # break / continue（仅在 while / for 块内有效）
+# 出现在块外时：
+#   AxnParseError: 'break' is only valid inside a 'while' or 'for' block.
+#     → scene.apy, line 12
 while True (rollback=none):
     $ hp -= 10
     if hp <= 0:
@@ -587,7 +610,10 @@ menu as answer:
         -> "yes"        # 块内显式返回值
     "拒绝" -> "no"      # 简单场景仍用内联写法
 
-# menu as 内不允许 jump，混用时解析器报错
+# menu as 内不允许 jump，混用时解析器报错：
+#   AxnParseError: 'jump' is not allowed inside 'menu as'.
+#     'menu as' collects a return value; use 'menu' for flow branching instead.
+#     → scene.apy, line 8
 # GUI 处理：menu as 对应独立的"菜单返回值"节点，与跳转型菜单节点分开
 
 # with char：连续对话锁定角色和默认修饰符
@@ -695,7 +721,14 @@ hide lantern 0.5 (exit=fadeout)
 | 跨类型继承 | ❌ 解析期报错 | ❌ 解析期报错 |
 | GUI 符号表分类 | 角色 | 图片对象 |
 
-`define image` 之间可以 `extends`，不能继承 `define char`，反之亦然。跨类型继承解析期报错。
+`define image` 之间可以 `extends`，不能继承 `define char`，反之亦然。跨类型继承解析期报错：
+
+```
+AxnParseError: Cross-type inheritance is not allowed.
+  'lantern_special' is 'define image' but extends 'autumn' which is 'define char'.
+  → characters.apy, line 42
+Hint: 'define image' can only extend other 'define image'. Use a separate 'define image' as base.
+```
 
 **静态别名与 `const` 的区别：**
 
@@ -931,7 +964,14 @@ autumn: "NVL 清屏后回到 ADV。"
 
 **回滚**：整个 `nvl:` 块作为回滚粒度——回滚时清屏并重显整块内容。
 
-**存档**：`nvl:` 块内不允许 `checkpoint`（编译期警告），存档须在块外触发。
+**存档**：`nvl:` 块内不允许 `checkpoint`（编译期警告），存档须在块外触发：
+
+```
+AxnWarning: [nvl] 'checkpoint' inside an 'nvl:' block.
+  NVL blocks cannot be safely checkpointed mid-block.
+  Move the 'checkpoint' to before or after the 'nvl:' block.
+  → scene.apy, line 18 (inside nvl: block starting at line 12)
+```
 
 **`options_window.apy` NVL 配置**：
 
@@ -1027,8 +1067,10 @@ show $sprite center
 
 ```apy
 startup:                    # 默认阶段
-    $ config.name = "My Game"
-    $ config.version = "1.0"
+    python:
+        # 启动阶段可执行任意初始化逻辑
+        import logging
+        logging.basicConfig(level=logging.DEBUG)
 
 startup (before):           # 最早执行，适合库初始化、依赖注入
     python:
@@ -1055,7 +1097,14 @@ autumn: "你好，{player_name}。今天是第 {day} 天。"
 autumn: "好感度：{relationship['autumn']}/100"
 ```
 
-插值表达式限制为单一表达式（变量、属性访问、下标、简单运算）。禁止函数调用和赋值——需要复杂计算时先用 `$` 块算好再引用。推断失败时抛出 `AxnInterpolationError`，指明文件位置和表达式内容。
+插值表达式限制为单一表达式（变量、属性访问、下标、简单运算）。禁止函数调用和赋值——需要复杂计算时先用 `$` 块算好再引用。推断失败时抛出 `AxnInterpolationError`，指明文件位置和表达式内容：
+
+```
+AxnInterpolationError: Invalid interpolation expression: 'get_name()'
+  Function calls are not allowed in dialogue interpolation.
+  → scene.apy, line 42
+Hint: Pre-compute the value with '$ name = get_name()' then use '{name}' in the dialogue.
+```
 
 **条件文本（inline conditional）**
 
@@ -1153,7 +1202,21 @@ anim.cancel()    # 立即停止动画
 
 `wait for anim` 是引擎层语法糖，底层轮询 `anim.done`。不允许在 Python 块里直接操作 `AnimationHandle` 对象——此限制保证 GUI 能完整解析 `wait for` 的依赖关系。
 
-`animation` 块内只允许引擎指令（`show`、`hide`、`camera`、`play`、`wait` 等），不允许 Python 块、对话行、`jump`、`menu`。目的是保证 GUI 能完整解析，也防止演出片段携带业务逻辑。
+`animation` 块内只允许引擎指令（`show`、`hide`、`camera`、`play`、`wait` 等），不允许 Python 块、对话行、`jump`、`menu`。目的是保证 GUI 能完整解析，也防止演出片段携带业务逻辑。违反时解析期报错：
+
+```
+AxnParseError: 'python:' block is not allowed inside an 'animation' block.
+  Move business logic to a 'label', then call the animation from there.
+  → animations.apy, line 12 (inside 'animation autumn_enter')
+
+AxnParseError: 'jump' is not allowed inside an 'animation' block.
+  'animation' blocks are for visual sequencing only.
+  → animations.apy, line 8 (inside 'animation boss_enter')
+
+AxnParseError: Dialogue line is not allowed inside an 'animation' block.
+  Use a 'label' with an interactive track for mixed dialogue and animation.
+  → animations.apy, line 6 (autumn: "..." inside 'animation boss_enter')
+```
 
 **`animation` 参数化**
 
@@ -1270,15 +1333,15 @@ AxnWarning: Save rejected: an unconditional 'animation loop' is running.
 
 **`show` 不阻塞执行流**
 
-`show autumn center (transform=shake_x)` 之后立即推进到下一行，transform 在后台运行，对话行不等 transform 完成。需要等待时显式使用 `as` + `wait for`：
+`show autumn center (transform=shake_x)` 之后立即推进到下一行，transform 在后台运行，对话行不等 transform 完成。需要等待时显式使用 `handle=` + `wait for`：
 
 ```apy
-show autumn center (transform=shake_x) as anim_shake   # 单行 show + as，合法
+show autumn center (transform=shake_x, handle=anim_shake)
 wait for anim_shake
 autumn: "你好。"    # shake_x 完成后才显示对话
 ```
 
-不等待时 transform 跑着，对话同时出现，两者互不阻塞。`as` 在单行 `show` 上与并行写法上均有效。
+不等待时 transform 跑着，对话同时出现，两者互不阻塞。`handle=` 在单行 `show` 上与并行写法上均有效。旧 `as` 写法保留但输出警告，可 ignore。
 
 **前台动画与后台动画**
 
@@ -1325,7 +1388,14 @@ parallel:
         camera shake 5 0.3
 ```
 
-同一 `parallel` 块只允许一个 interactive track，多个时解析器报错。
+同一 `parallel` 块只允许一个 interactive track，多个时解析器报错：
+
+```
+AxnParseError: Multiple 'interactive' tracks in the same 'parallel' block.
+  Only one track can handle user input at a time.
+  → scene.apy, line 15 (second 'track (interactive)' in 'parallel' block starting at line 8)
+Hint: Merge the dialogue lines into one interactive track.
+```
 
 `parallel` 块内的所有 `track` 并行执行，默认等所有 `track` 完成后推进（等价于 `wait for all`）。需要提前推进时：
 
@@ -1337,7 +1407,16 @@ parallel (wait=any):
         ...
 ```
 
-`wait=any` 与 interactive track 共存时，解析器直接报错，不允许此组合。理由：interactive track 正在等用户点击时，"最先完成的 track"触发推进，点击事件时机不可预测，会产生误触或输入状态污染。需要提前推进的场景，改用 `wait=none` + 手动 `wait for` 精细控制。
+`wait=any` 与 interactive track 共存时，解析器直接报错，不允许此组合：
+
+```
+AxnParseError: 'wait=any' is incompatible with 'track (interactive)'.
+  An interactive track waits for user input, making 'wait=any' unpredictable.
+  Use 'wait=none' with explicit 'wait for <track>' for fine-grained control.
+  → scene.apy, line 8 (parallel (wait=any) containing interactive track)
+```
+
+理由：interactive track 正在等用户点击时，"最先完成的 track"触发推进，点击事件时机不可预测，会产生误触或输入状态污染。需要提前推进的场景，改用 `wait=none` + 手动 `wait for` 精细控制。
 
 `track` 可命名后用 `wait for` 精细控制：
 
@@ -1348,7 +1427,7 @@ parallel (wait=none):           # 不自动等待，手动控制
         autumn: "第二句"
     track bgm:
         play music "bgm/tense.ogg" 0.8 1.0
-    track scene as anim_scene:
+    track scene (handle=anim_scene):
         show autumn left 0.5
         camera shake 5 0.3
 
@@ -1751,22 +1830,22 @@ show autumn (color_matrix=NightMatrix(0.8))
 layer color_matrix bg NightMatrix(0.6)
 ```
 
-**Layer 级 Transform**：对整个层应用 ATL transform 或过渡，作用于层的合成 surface：
+**Layer 级 Transform**：对整个层应用 transform 或过渡，作用于层的合成 surface：
 
 ```apy
-layer transform sprite (fade_out 0.5)         # 整层渐出
-layer transform sprite (shake_x)             # 整层抖动
-layer transform sprite (transform=breathe)   # 整层呼吸动画
-layer transform sprite none                  # 清除层 transform
+layer transform sprite (transform=fade_out) 0.5   # 整层渐出，duration 作为第二位置参数
+layer transform sprite (transform=shake_x)        # 整层抖动
+layer transform sprite (transform=breathe)        # 整层呼吸动画
+layer transform sprite none                       # 清除层 transform
 ```
 
-`layer transform` 的 transform 名称语义与 `show` 的 `(transform=X)` 完全一致，共享同一套 transform 定义。Layer transform 不参与 `wait for all`（始终视为后台动画）；需要等待时用具名参数 `(handle=layer_anim)` + `wait for`。
+`layer transform` 的 transform 名称语义与 `show` 的 `(transform=X)` 完全一致，共享同一套 transform 定义。Layer transform 不参与 `wait for all`（始终视为后台动画）；需要等待时用 `(handle=layer_anim)` + `wait for`。
 
 ```apy
-layer transform sprite (fade_out 1.0) (handle=layer_fade)
+layer transform sprite (transform=fade_out, handle=layer_fade) 1.0
 wait for layer_fade
 scene bg_new_room
-layer transform sprite (transform=none)
+layer transform sprite none
 ```
 
 **Round-Trip**：`color_matrix=` 在 `show` 积木块中显示为独立颜色矩阵字段，内置矩阵提供下拉选择，参数可编辑；`layer color_matrix` 和 `layer transform` 对应层管理面板中的独立字段。
@@ -1830,7 +1909,13 @@ const MAX_RELATIONSHIP = 100
 const ROUTES = ["a", "b", "c"]
 ```
 
-引擎启动时静态求值，写入只读层（与内置符号同层），用户代码不可覆盖。右值必须是字面量或字面量组合，不允许引用 `store` 变量或调用函数。尝试在运行时覆盖 `const` 时抛出 `AxnConstError`。
+引擎启动时静态求值，写入只读层（与内置符号同层），用户代码不可覆盖。右值必须是字面量或字面量组合，不允许引用 `store` 变量或调用函数。尝试在运行时覆盖 `const` 时抛出 `AxnConstError`：
+
+```
+AxnConstError: Cannot assign to constant 'MAX_RELATIONSHIP'.
+  Constants are read-only and cannot be modified at runtime.
+  → scene.apy, line 8
+```
 
 **`flag` 声明块**
 
@@ -1847,7 +1932,13 @@ flag:
 
 `flag` 块声明的变量直接写入 `store`，访问方式与普通 `store` 变量完全一致，无命名空间前缀。
 
-有类型注解的变量在 debug 模式下触发即时类型检查：引擎通过 `Store.__setitem__` 钩子，在赋值时立即验证类型是否匹配，不匹配时抛出 `AxnTypeError` 并指明声明位置，而不是等到存档时才发现。release 模式下 `Store` 退化为普通 `dict`，零开销。
+有类型注解的变量在 debug 模式下触发即时类型检查：引擎通过 `Store.__setitem__` 钩子，在赋值时立即验证类型是否匹配，不匹配时抛出 `AxnTypeError` 并指明声明位置，而不是等到存档时才发现。release 模式下 `Store` 退化为普通 `dict`，零开销：
+
+```
+AxnTypeError: Type mismatch for 'day': expected int, got str.
+  Declared at: scene.apy, line 3 (flag: day: int = 1)
+  Assignment at: scene.apy, line 42
+```
 
 **`set` 指令（GUI 友好写法）**
 
@@ -1965,7 +2056,15 @@ include "common/prologue.apy"
 
 编译期展开，等价于将目标文件内容内联到当前位置。与 `jump`/`call` 的区别：`include` 是编译期合并，不产生运行时跳转，也不创建独立的执行上下文。
 
-适用场景：跨章节复用的开场白、结局模板、通用菜单片段等。引擎启动时检测循环 `include`，发现时抛出错误并打印完整引用链。
+适用场景：跨章节复用的开场白、结局模板、通用菜单片段等。引擎启动时检测循环 `include`，发现时抛出错误并打印完整引用链：
+
+```
+AxnParseError: Circular include detected.
+  common/prologue.apy → common/shared.apy → common/prologue.apy
+
+  → common/shared.apy, line 3 (include "common/prologue.apy")
+Hint: Extract the shared content into a third file that neither imports the other.
+```
 
 ---
 
@@ -1996,7 +2095,23 @@ expoint after_prologue
 
 **多次定义行为**：同一 `expoint` 被多个文件定义时，按加载顺序**追加执行**，引擎输出警告，可 ignore。需要覆盖语义时用 `(replace)`，此时不警告。
 
-**硬性限制**：定义块内禁止 `jump`（会破坏"注入后继续主流程"的语义），允许 `call`。违反时解析期报错。
+**硬性限制**：定义块内禁止 `jump`（会破坏"注入后继续主流程"的语义），允许 `call`。违反时解析期报错：
+
+```
+AxnParseError: 'jump' is not allowed inside an 'expoint' definition block.
+  'expoint' is designed to inject content that returns to the main flow.
+  Use 'call' to invoke sub-labels, or restructure with a regular 'label'.
+  → dlc/chapter3.apy, line 18 (inside 'expoint after_prologue:')
+```
+
+多次定义时的警告：
+
+```
+AxnWarning: [expoint] 'after_prologue' is defined in multiple files.
+  Execution order: dlc/base.apy → dlc/chapter3.apy
+  Use '(replace)' to override instead of appending.
+  → dlc/chapter3.apy, line 5
+```
 
 **与现有机制的区别**：
 
@@ -2151,7 +2266,13 @@ label morning_scene:      # 动态（默认）
 sta label morning_scene:  # 强制静态，非默认行为，显式标记
 ```
 
-`sta` 仅在 `label` 上有意义——`label` 默认动态，加 `sta` 表示这是有意为之的静态声明，代码审查时一眼可见。`define` 本身默认静态，`sta define` 无额外语义，不支持此写法。
+`sta` 仅在 `label` 上有意义——`label` 默认动态，加 `sta` 表示这是有意为之的静态声明，代码审查时一眼可见。`define` 本身默认静态，`sta define` 无额外语义，不支持此写法（解析期报错）：
+
+```
+AxnParseError: 'sta' modifier is not valid for 'define'.
+  'define' is already static by default. 'sta' is only meaningful for 'label'.
+  → characters.apy, line 3
+```
 
 静态 label 与动态 label 的具体区别：
 
@@ -2161,6 +2282,15 @@ sta label morning_scene:  # 强制静态，非默认行为，显式标记
 | `$` / `python:` 块 | 允许 | 编译期报错 |
 | GUI 解析 | 可能含代码节点 | 保证完整解析为积木块，无代码节点 |
 | 引擎优化 | 无额外优化 | 编译期预处理，跳转目标缓存 |
+
+`sta label` 内含动态代码时的报错示例：
+
+```
+AxnParseError: 'sta' label 'morning_scene' contains dynamic code.
+  'sta' guarantees no dynamic nodes; '$' blocks and 'python:' blocks are not allowed.
+  → scene.apy, line 12 ($ flag = True inside 'sta label morning_scene')
+Hint: Remove 'sta' modifier to allow dynamic code, or move the logic outside this label.
+```
 
 `sta` 的核心价值：一是给 GUI 一个保证——此 label 无代码节点，可完整可视化；二是代码审查信号——作者明确声明此处不应有动态行为，后续若有人加入 `$` 块，编译器报错而不是静默通过。`sta` 不是性能优化手段。
 
@@ -2279,14 +2409,29 @@ Hint: Use 'show autumn (duration=0.3)' to make intent explicit.
 | `unlock scene` | 显示名 | `label` `thumb` `category` |
 | `unlock music` | 路径 | `title` `composer` `thumb` `loop` |
 | `layer color_matrix` | 层名 → 矩阵名或 `none` | — |
-
-**子命令**用于同一动词下行为模式本质不同的场景（如 `camera move` / `camera shake` / `camera reset`，`play music` / `play sound` / `play video`）。子命令集合由引擎硬编码，不可由用户扩展，解析器行为完全可预测。判断标准：参数描述"怎么做"时用具名参数；改变"做什么"时拆为子命令。子命令不可省略。
-
-**各指令位置参数顺序**：
+| `layer transform` | 层名 | `transform` `handle` `none` |
+| `channel create` | 通道名 | — |
+| `channel destroy` | 通道名 | — |
+| `after` | duration（秒） | — （块语法，块内只允许引擎指令） |
+| `defer` | — | — （块语法，在 label 退出时执行） |
+| `once` | `per_session` / `per_playthrough` / `ever` | — （块语法） |
+| `unwind` | — | `to`（目标 label 名，可选） |
+| `exit` | — | `confirm` `save` |
+| `repeat`（块） | 重复次数 | — （块语法，块内只允许引擎指令） |
+| `signal` | 信号名字符串 | 任意具名参数（附加数据） |
+| `rollback fence` | — | — （块语法） |
+| `snapshot` | 快照名字符串 | `keys`（可选，指定顶层变量列表） |
 
 ### 关键设计决策
 
-**`show` 的 `handle=` / `alias=` 与旧 `as` / `at` 写法**：推荐参数化写法——`handle=` 获取动画句柄，`alias=` 命名多实例。旧 `as` / `at` 写法保留但引擎运行时输出警告，可 ignore，符合兼容性容错原则。`with` 关键字已被 `with char` / `with store` 占用，用于 `show` 时解析期直接报错（真实歧义，非兼容问题）。`at` 只接位置关键字（`left` / `center` / `right` 等），不接 transform；transform 只走 `(transform=X)` 具名参数。`alias=` 命名的实例与原角色完全独立，位置、表情、transform 状态互不影响，`hide`/`expression` 按 alias 名操作。
+**`show` 的 `handle=` / `alias=` 与旧 `as` / `at` 写法**：推荐参数化写法——`handle=` 获取动画句柄，`alias=` 命名多实例。旧 `as` / `at` 写法保留但引擎运行时输出 `AxnWarning`，可 ignore，符合兼容性容错原则。`with` 关键字已被 `with char` / `with store` 占用，用于 `show` 时解析期直接报错（真实歧义，非兼容问题）：
+
+```
+AxnParseError: 'with' is ambiguous in 'show' context. Use 'handle=' for animation handles.
+  → scene.apy, line 8
+```
+
+`at` 只接位置关键字（`left` / `center` / `right` 等），不接 transform；transform 只走 `(transform=X)` 具名参数。`alias=` 命名的实例与原角色完全独立，位置、表情、transform 状态互不影响，`hide`/`expression` 按 alias 名操作。
 
 **`show` 多实例语义**：同一角色可通过 `alias=` 同时存在多个独立实例，适用于回忆、幻觉、镜像等演出场景。每个实例独立维护自己的可见性、位置和表情状态，引擎内部以 `(角色名, alias名)` 作为唯一标识。未指定 `alias=` 时默认实例名为角色名本身。
 
@@ -2310,7 +2455,7 @@ Hint: Use 'show autumn (duration=0.3)' to make intent explicit.
 
 **`show` 层级**：默认操作 sprite 层，需要时通过 `(layer=effect)` 等显式指定。层级扩展需求驱动，不过早设计。
 
-**并行与串行执行**：同行逗号分隔的指令并行执行，引擎默认等所有并行动画完成后推进。需要精细控制等待时机时，用 `as` 给动画命名，再用 `wait for` 显式控制。`wait for` 中 `for` 是介词而非子命令，`wait for all` / `wait for any` / `wait for <name>` 三种形式语义链完整。
+**并行与串行执行**：同行逗号分隔的指令并行执行，引擎默认等所有并行动画完成后推进。需要精细控制等待时机时，用 `handle=` 给动画命名，再用 `wait for` 显式控制。`wait for` 中 `for` 是介词而非子命令，`wait for all` / `wait for any` / `wait for <name>` 三种形式语义链完整。旧 `as` 写法保留但输出 `AxnWarning`，可 ignore。
 
 **`scene` 默认清空 sprite 层**：`scene` 切换背景时默认同时清空 sprite 层（高频用法零开销）。需要保留立绘时显式使用 `(keep)` 或 `(keep=角色名)` 具名参数；`(keep=[autumn, sophia])` 支持保留多个。`scene` 只清非持久层，持久层（如 `ui`）完全不受影响。
 
@@ -2408,7 +2553,7 @@ class CharacterDisplay(AnimatedSprite):   # 纯显示状态，不进 store
         self.timer = snapshot["timer"]
 ```
 
-**`keyframe 折叠规则**：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致，解析器无歧义。
+**keyframe 折叠规则**：冒号后有内容 = 单行（单属性）；冒号后为空 = 展开块（多属性）。和 Python 自身的单行/块语法直觉一致，解析器无歧义。
 
 **transition 扩展**：内置过渡由引擎标准库提供，自定义过渡继承 `Transition` 抽象类，通过 `apply(surface, progress)` 接口实现，直接传实例到具名参数，不引入新语法。
 
@@ -2430,9 +2575,27 @@ with autumn (happy, speed=1.0):
 
 **`narrate` 块**：连续旁白的语法糖，替代重复的 `@`。块内裸字符串全部作为旁白处理，支持修饰符。GUI 对应旁白段落积木块。
 
-**`narrator` 保留关键字**：`@` 和 `narrator:` 是单行旁白的两种等价写法，`with narrator:` 与 `narrate:` 块等价。`narrator` 是引擎保留关键字，不允许用户通过 `define` 覆盖；尝试 `define char narrator` 时引擎在启动时报错。三种旁白写法（`@`、`narrator:`、`narrate:` 块）风格自选，同一项目内保持一致即可。
+**`narrator` 保留关键字**：`@` 和 `narrator:` 是单行旁白的两种等价写法，`narrate:` 块是连续旁白的语法糖（等价于多行 `@`），`with narrator:` 与 `narrate:` 块语义一致。`narrator` 是引擎保留关键字，不允许用户通过 `define` 覆盖；尝试 `define char narrator` 时引擎在启动时报错：
 
-**`voice` 短路径**：对话修饰符中 `voice="001"` 自动展开为 `voice_prefix + "001" + 扩展名`。扩展名推断规则：若 `define` 中声明了 `voice_ext` 字段则直接使用；未声明时引擎按 `.ogg` → `.mp3` → `.wav` 优先级扫描，找到第一个存在的文件即用，全部找不到时抛出 `AxnVoiceError`。完整路径写法永远有效，短路径是语法糖。引擎构建发布包时（`axn build`），对所有短路径的推断结果固化为一张查找表（`dict[str, str]`，短路径 → 完整路径），打包进包体。运行时 `asset/loader.py` 优先查表，零 I/O；开发期查表未命中时回退到实时扫描兜底。
+```
+AxnParseError: 'narrator' is a reserved keyword and cannot be used as a character name.
+  Use a different name for your character.
+  → characters.apy, line 3
+```
+
+单行旁白写法（`@`、`narrator:`）风格自选，同一项目内保持一致即可；连续旁白推荐 `narrate:` 块。
+
+**`voice` 短路径**：对话修饰符中 `voice="001"` 自动展开为 `voice_prefix + "001" + 扩展名`。扩展名推断规则：若 `define` 中声明了 `voice_ext` 字段则直接使用；未声明时引擎按 `.ogg` → `.mp3` → `.wav` 优先级扫描，找到第一个存在的文件即用，全部找不到时抛出 `AxnVoiceError`：
+
+```
+AxnVoiceError: Voice file not found for short path '001'.
+  Searched: vo/autumn/001.ogg, vo/autumn/001.mp3, vo/autumn/001.wav
+  Character 'autumn' voice_prefix: 'vo/autumn/'
+  → scene.apy, line 42
+Hint: Use a full path like (voice="vo/autumn/001.ogg") or declare 'voice_ext' in define.
+```
+
+完整路径写法永远有效，短路径是语法糖。引擎构建发布包时（`axn build`），对所有短路径的推断结果固化为一张查找表（`dict[str, str]`，短路径 → 完整路径），打包进包体。运行时 `asset/loader.py` 优先查表，零 I/O；开发期查表未命中时回退到实时扫描兜底。
 
 DLC / `mount_archive` 场景下，后挂载的归档引入新语音文件时，查找表支持增量合并（主表 + 归档补丁表分层查找），不覆盖主表。
 
@@ -2532,7 +2695,30 @@ input disable:
 
 **持久层**：`layer create` 支持 `persistent` flag，声明为持久层的层不受 `scene` 的默认清除影响。内置层中 `ui` 默认持久，`bg` / `sprite` / `effect` 默认非持久。`clear (layer=ui_hud)` 可以显式清除持久层，但 `clear`（无 `layer` 参数）只清非持久层，不误伤持久层。
 
-**分层立绘**：角色立绘支持两种模型，二选一，同一 `define` 块内不可混用，混用时引擎启动报错。`states` 模型：整图切换，每个状态对应一张完整立绘图片。`layers` 模型：多图层叠加，静态层（单文件）不参与状态切换，动态层（有子状态列表）通过修饰符切换；`expressions` 映射将一个修饰符名映射到多个动态层的组合状态，`expressions` 映射必须覆盖所有动态层，漏写时引擎启动报错。图层叠加顺序：要么全部走声明顺序，要么全部写 `z_order`，不允许混用，混用时引擎启动报错。
+**分层立绘**：角色立绘支持两种模型，二选一，同一 `define` 块内不可混用，混用时引擎启动报错：
+
+```
+AxnParseError: Cannot use both 'states' and 'layers' in the same 'define char'.
+  → characters.apy, line 8 (define char autumn)
+```
+
+`states` 模型：整图切换，每个状态对应一张完整立绘图片。`layers` 模型：多图层叠加，静态层（单文件）不参与状态切换，动态层（有子状态列表）通过修饰符切换；`expressions` 映射将一个修饰符名映射到多个动态层的组合状态，`expressions` 映射必须覆盖所有动态层，漏写时引擎启动报错：
+
+```
+AxnParseError: 'expressions' mapping for 'autumn' is incomplete.
+  Dynamic layer 'brow' has no entry in 'expressions'.
+  All dynamic layers must be covered by at least one expression mapping.
+  → characters.apy, line 22
+```
+
+图层叠加顺序：要么全部走声明顺序，要么全部写 `z_order`，不允许混用，混用时引擎启动报错：
+
+```
+AxnParseError: Mixed z_order in 'layers' for 'autumn'.
+  Either all layers must have explicit 'z_order', or none should.
+  Layer 'body' has z_order=1, layer 'hair' has no z_order.
+  → characters.apy, line 8
+```
 
 **`expression` 指令**：无对话时切换表情的专用指令，`show` 不承担此职责。`states` 模型下 `expression autumn happy` 整图切换；`layers` 模型下走 `expressions` 映射。`layers` 模型支持直接指定各层（`expression autumn (face=happy, brow=angry)`）绕过映射，也支持换装（`expression autumn (outfit=casual)`）。可选 `transition` 具名参数控制过渡效果。两套模型下用户侧语法完全一致，差异由引擎内部按角色声明类型分派。
 
@@ -2542,7 +2728,16 @@ input disable:
 
 **条件跳转短路写法**：`jump`/`call`/`return` 行末可接 `if`/`unless` 条件，条件表达式为完整 Python 表达式。不支持 `call ... as result if ...`（条件不满足时返回值语义不明），退回 `if` 块处理。GUI 对应带条件标签的跳转箭头节点，视觉权重轻于完整 `if` 块，与 `unless` 卫语句设计意图一致。
 
-**`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错。`wait=any` 与 interactive track 共存时解析器直接报错——interactive track 等待用户点击期间，`wait=any` 触发推进的时机不可预测，会产生输入状态污染，此组合没有合理的使用场景。需要提前推进时改用 `wait=none` + 手动 `wait for`。`wait=none` 下使用 `wait for <interactive_track>` 时，输入路由规则不变：interactive track 仍然独占用户输入，`wait for` 是纯被动观察者，只轮询 `track.done`，不接管输入；用户点击推进对话 → track 内部前进 → track 完成 → `wait for` 自然满足。此设计消除了对话行与并行执行之间的交互模型歧义。
+**`parallel` 交互轨道模型**：`track (interactive)` 显式标记允许对话行的交互轨道，独占用户输入，每个 `parallel` 块只允许一个。普通轨道不允许对话行，遇到时解析器报错：
+
+```
+AxnParseError: Dialogue line is not allowed in a non-interactive track.
+  Declare this track as 'track name (interactive)' to allow dialogue.
+  Note: only one interactive track is allowed per 'parallel' block.
+  → scene.apy, line 12 (autumn: "..." inside non-interactive track)
+```
+
+`wait=any` 与 interactive track 共存时解析器直接报错——interactive track 等待用户点击期间，`wait=any` 触发推进的时机不可预测，会产生输入状态污染，此组合没有合理的使用场景。需要提前推进时改用 `wait=none` + 手动 `wait for`。`wait=none` 下使用 `wait for <interactive_track>` 时，输入路由规则不变：interactive track 仍然独占用户输入，`wait for` 是纯被动观察者，只轮询 `track.done`，不接管输入；用户点击推进对话 → track 内部前进 → track 完成 → `wait for` 自然满足。此设计消除了对话行与并行执行之间的交互模型歧义。
 
 **`Store` 作为 exec globals 的代理层**：`exec()` 的 globals 使用内部 `_exec_globals` dict，`Store` 作为其代理层对外暴露游戏变量的读写接口。`exec()` 会自动向 globals 写入 `__builtins__` 等 dunder key，`Store` 序列化时过滤所有 dunder key，保证存档不被污染。此设计同时避免了用户通过 `__builtins__["eval"]` 等路径绕过只读层的问题。
 
@@ -2560,7 +2755,7 @@ input disable:
 
 **`animation` 参数化**：`animation` 块支持函数签名风格参数，和 `label` 保持一致。参数类型限制为角色名、位置关键字、数值、字符串字面量，不允许 Python 表达式，也不允许 `$` 前缀的动态变量——参数必须在编译期完全确定，保证 GUI 能完整解析调用点。调用点传入 `$` 前缀参数时解析期报错。需要动态参数时退回 `label` + Python 块处理。
 
-**`show` 永不阻塞执行流**：`show` 指令（含 `transform` 参数）之后立即推进到下一行，transform 在后台运行。需要等待时显式使用 `as` + `wait for`。`as` 在单行 `show` 和并行写法上均有效。
+**`show` 永不阻塞执行流**：`show` 指令（含 `transform` 参数）之后立即推进到下一行，transform 在后台运行。需要等待时显式使用 `handle=` + `wait for`。`handle=` 在单行 `show` 和并行写法上均有效。旧 `as` 写法保留但输出 `AxnWarning`，可 ignore。
 
 **前台动画与后台动画**：`transform` 按 `repeat` 类型自动区分身份，不需要用户额外声明。`repeat 1` / `repeat N` 为前台动画，参与 `wait for all`；`repeat forever` / `repeat forever pingpong` 为后台动画，不参与 `wait for all`，持续运行直到对象被 `hide` 或 `transform=none`。`wait for all` 时若无前台动画立即满足，debug 模式输出警告。
 
@@ -2623,7 +2818,7 @@ AxnWarning: [ui] 'draggable' and 'moveable' both declared without 'handle'.
 
 **`chorus` 块**：多角色合唱，显示在同一对话框，所有角色语音同时播放各走各自 `voice_prefix`；整体作为一个回滚单元；名字显示格式可配置。支持 `line=` 和 `inp=` 块级参数（见下）。
 
-**`together` / `chorus` 的 `line=` 和 `inp=` 块级参数**：两个语法糖，适用于 `together` 和 `chorus` 块。`line=` 用 `|` 分隔，按顺序对应块内各行施加文本标签效果，单值无 `|` 时应用整块，多出的段静默忽略；同一段内逗号叠加多个标签。`inp=` 接受 `store` 变量或 expoint 返回值，必须是 `dict`，key 为修饰符参数名，统一应用到块内所有行；行内显式声明的同名参数优先级更高。两者均为纯展开语法糖，不引入新渲染逻辑，可同时使用互不干扰。
+**`together` / `chorus` 的 `line=` 和 `inp=` 块级参数**：两个语法糖，适用于 `together` 和 `chorus` 块。`line=` 用 `|` 分隔，按顺序对应块内各行施加文本标签效果，单值无 `|` 时应用整块，多出的段静默忽略；同一段内逗号叠加多个标签。`inp=` 接受 `store` 变量（必须是 `dict`），key 为修饰符参数名，统一应用到块内所有行；行内显式声明的同名参数优先级更高。两者均为纯展开语法糖，不引入新渲染逻辑，可同时使用互不干扰。
 
 **旁白在非交互轨道**：`@` / `narrator:` 不算对话行，允许出现在 `parallel` 的非交互轨道，不产生输入路由冲突。
 
@@ -2941,7 +3136,7 @@ together (line="<nw>,<fast>|<w>"):
 
 `line=` 是纯语法糖，展开后等价于在每行对话文本头部插入对应标签，不引入新的渲染逻辑。
 
-**`inp=` 注入参数**：`together` 和 `chorus` 块支持 `inp=` 块级参数，接受 `store` 变量或 expoint 返回值，必须是 `dict`，key 为修饰符参数名。`dict` 内容作为额外修饰符统一应用到块内所有行，等价于每行都加了对应的具名参数：
+**`inp=` 注入参数**：`together` 和 `chorus` 块支持 `inp=` 块级参数，接受 `store` 变量（必须是 `dict`），key 为修饰符参数名。`dict` 内容作为额外修饰符统一应用到块内所有行，等价于每行都加了对应的具名参数：
 
 ```apy
 $ shared_mods = {"speed": store["text_speed"], "voice_delay": 0.1}
@@ -2949,14 +3144,6 @@ $ shared_mods = {"speed": store["text_speed"], "voice_delay": 0.1}
 together (inp=shared_mods):
     autumn: "你好。"    # 等价于 (speed=store["text_speed"], voice_delay=0.1)
     sophia: "再见。"    # 同上
-
-# 配合 expoint 使用
-expoint dialogue_modifiers:
-    -> {"speed": 0.8, "face": "serious"}
-
-together (inp=dialogue_modifiers):
-    autumn: "听着。"
-    sophia: "我知道了。"
 ```
 
 `inp=` 的优先级低于行内修饰符——行内显式声明的参数覆盖 `inp=` 提供的同名参数：
@@ -2973,6 +3160,13 @@ together (inp={"speed": 0.5}):
 together (line="<nw>|<w>", inp={"speed": 0.7}):
     autumn: "第一句。"
     sophia: "第二句。"
+```
+
+`inp=` 的值必须是 `dict` 类型，传入非 `dict` 时运行时抛 `AxnRuntimeError`：
+
+```
+AxnRuntimeError: [together] 'inp=' requires a dict, got str.
+  → scene.apy, line 8
 ```
 
 `together` 内出现 `nowait` 时忽略并输出警告：
@@ -3022,8 +3216,16 @@ parallel:
 chorus autumn sophia:
     "我们绝不放弃！"
 
-chorus autumn sophia narrator:
+chorus autumn sophia kenji:
     "这一刻，所有人都明白了。" (speed=0.8)
+```
+
+注意：`narrator` 不是角色，不允许出现在 `chorus` 成员列表中；`chorus` 只接受已用 `define char` 定义的角色名，使用未定义角色时解析期报错：
+
+```
+AxnParseError: 'narrator' is not a defined character and cannot be used in 'chorus'.
+  Use '@' or 'narrator:' for narrator lines outside 'chorus'.
+  → scene.apy, line 8
 ```
 
 对话框显示所有角色的名字，格式在 `options_window.apy` 中配置：
@@ -3507,7 +3709,12 @@ class QuestState(Saveable):
 
 ```
 AxnSaveError: Object of type 'QuestState' is not saveable.
-Declare it with @saveable or inherit from Saveable.
+  Cannot serialize 'QuestState' during save operation.
+  → save triggered at: scene.apy::morning_scene, checkpoint "第一章"
+
+Declare it with @saveable or inherit from Saveable:
+  Option 1 (simple):   @saveable class QuestState: ...
+  Option 2 (versioned): class QuestState(Saveable): __version__ = 1 ...
 ```
 
 ---
@@ -3534,21 +3741,21 @@ Axn-Plus 的 UI 系统按后端分为两条路线，Pygame 后端下细分为两
 
 **不做 `textbutton` / `imagebutton` 这种分类。** Ren'Py 的控件体系把内容类型混进了控件类型，导致组合场景没有标准写法。Axn-Plus 的内置控件只定义结构和交互语义，内容通过 `slot children` 填充，样式通过样式系统注入。
 
-**控件本身不预设视觉。** `button` 不携带任何默认背景或颜色，`style button` 全局推导注入项目默认样式，不写则自然是素的。调用点不允许内联样式属性，需要临时覆盖时先定义 `mixin`，再通过 `style=` 具名参数传入。
+**控件本身不预设视觉。** `button` 不携带任何默认背景或颜色，`style button` 全局推导注入项目默认样式，不写则自然是素的。调用点推荐通过 `style=` 传入 `mixin` 名来覆盖样式。
 
-**兼容写法**：`button` 的 `style=` 参数也接受内联样式属性，但不推荐。内联样式绕过样式系统的优先级链，产生的覆盖冲突由开发者自行负责。推荐写法始终是先定义 `mixin`，再通过 `style=` 传入。GUI 编辑器对调用点使用内联样式时以黄色警告标注"建议改用 mixin"，但不阻止保存。
+**兼容写法（容错）**：`button` 的 `style=` 参数也接受内联样式属性，引擎运行时输出警告，可 ignore。内联样式绕过样式系统的优先级链，产生的覆盖冲突由开发者自行负责。推荐写法始终是先定义 `mixin`，再通过 `style=` 传入。GUI 编辑器对调用点使用内联样式时以黄色警告标注"建议改用 mixin"，但不阻止保存。
 
 **三条样式传递路径：**
 
 ```
 路径一：全局 style 自动推导（零配置，按命名约定自动绑定）
 路径二：gui 定义内 apply mixin（项目级复用）
-路径三：调用点 style= 参数（实例级覆盖，只接受 mixin，不接受 style）
+路径三：调用点 style= 参数（实例级覆盖，推荐只接受 mixin；传入内联属性会警告可 ignore）
 ```
 
 优先级：`调用点 style= > gui 内 apply > 自动推导 style > theme token`
 
-**`style=` 只接受 `mixin`，不接受 `style`。** `style` 是全局推导用的，`mixin` 是手动 apply 用的，两者职责不混。
+**`style=` 推荐只接受 `mixin`，不接受 `style`。** `style` 是全局推导用的，`mixin` 是手动 apply 用的，两者职责不混。传入 `style` 名时引擎输出警告并按 `mixin` 语义处理，可 ignore。
 
 #### 控件分层
 
@@ -4018,7 +4225,18 @@ if result == "confirm":
 | `call screen` / `modal show` | `call screen confirm_dialog as result` | screen 内用 `Return(expr)` 函数传值 |
 | `menu as` | `menu as answer:` | 选项内用 `->` 右侧表达式传值 |
 
-三者的执行上下文本来就不同，不强行统一。在 label 内写 `Return("x")` 或在 menu 选项内写 `return expr` 均无效，解析期报错。
+三者的执行上下文本来就不同，不强行统一。在 label 内写 `Return("x")` 或在 menu 选项内写 `return expr` 均无效，解析期报错：
+
+```
+AxnParseError: 'Return()' is not valid inside a 'label' block.
+  Use 'return expr' to return a value from a label.
+  'Return()' is only valid inside 'screen' or 'gui' controls for 'call screen' / 'modal show'.
+  → scene.apy, line 8
+
+AxnParseError: 'return' is not valid inside a 'menu' option.
+  Use '-> expr' to specify the return value for 'menu as'.
+  → scene.apy, line 12
+```
 
 **`call screen` 与 `modal show` 的区别**：
 
@@ -4484,7 +4702,13 @@ simple_card("任务"):
 
 - **`slot` 不支持嵌套透传**：不允许将外层 `slot` 透传给内层 `screen` 或 `gui`，需要多层组合时用 `extends` 或拆成独立定义。规则简单，插槽来源可追踪。
 - **`slot` 只能声明在 `screen` 和 `gui` 定义块内**，不允许出现在 `label` 或普通 `.apy` 脚本流程中。
-- 同一控件内 `slot` 名称不可重复，引擎启动时检查并报错。
+- 同一控件内 `slot` 名称不可重复，引擎启动时检查并报错：
+
+```
+AxnParseError: Duplicate slot name 'body' in 'gui BaseCard'.
+  Each slot within the same control must have a unique name.
+  → ui/components.apy, line 24
+```
 
 ---
 
@@ -5637,7 +5861,7 @@ engine:
             scramble_text    = false
             downloader       = false
             archive          = false
-            notice           = true
+            notify_ui        = true     # 游戏内通知 UI 模板（核心 notify 指令需要此 UI）
             error_screen     = false
 
         # 外部扩展（main/axn/ 目录），整体开关
@@ -5960,7 +6184,14 @@ axn_plus/
 | `voice` | `play voice` | 语音 |
 | `ambient` | `play ambient` | 环境音 |
 
-四个内置通道名为保留关键字，不允许自定义通道使用相同名称，引擎启动时检查并报错。
+四个内置通道名为保留关键字，不允许自定义通道使用相同名称，引擎启动时检查并报错：
+
+```
+AxnParseError: Channel name 'music' is reserved by the engine.
+  Built-in channels: music, sound, voice, ambient.
+  Choose a different name for your custom channel.
+  → options_window.apy, line 12
+```
 
 `play music` 等价于 `play audio (channel="music")`，内置通道是语法糖。
 
@@ -6066,18 +6297,59 @@ AxnError (基类)
 │   ├── AxnNameError     # 未声明变量引用
 │   ├── AxnTypeError     # 类型不匹配（flag 注解检查，debug 模式专属）
 │   ├── AxnJumpError     # jump/call 目标不存在
+│   ├── AxnConstError    # 尝试修改 const 声明的常量
+│   ├── AxnValueError    # flag validate 校验失败
+│   ├── AxnInterpolationError  # 对话插值表达式求值失败
 │   └── AxnSaveError     # 存档序列化失败
 ├── AxnAssetError        # 资源加载失败
 │   └── AxnVoiceError    # voice 短路径推断失败
+├── AxnExtensionError    # 扩展模块注册/加载失败
+├── AxnThemeError        # theme token 类型不匹配（引擎启动时）
 └── AxnInternalError     # 引擎自身 bug，直接暴露 Python traceback
 ```
+
+**各错误类的触发时机：**
+
+| 错误类 | 触发时机 | 示例场景 |
+|--------|---------|---------|
+| `AxnParseError` | Lexer/Parser 阶段 | 语法错误、循环继承、label 冲突 |
+| `AxnCompileError` | AST → 字节码阶段 | 跳转目标编译期验证失败、成就 id 重复 |
+| `AxnNameError` | VM 执行时 | 访问未在 `flag` 声明的变量（严格模式）|
+| `AxnTypeError` | VM 执行时（debug 模式） | `flag: day: int` 被赋值 `str` |
+| `AxnJumpError` | VM 执行时 | `jump` / `call` 动态目标在运行时不存在 |
+| `AxnConstError` | VM 执行时 | `$ MAX_HP = 200`（MAX_HP 是 const）|
+| `AxnValueError` | VM 执行时 | `flag validate` 校验失败 |
+| `AxnInterpolationError` | VM 执行时 | 对话插值含函数调用 |
+| `AxnSaveError` | 存档写入时 | 未声明可序列化的自定义类 |
+| `AxnAssetError` | 资源加载时 | 图片文件不存在 |
+| `AxnVoiceError` | 语音解析时 | voice 短路径找不到对应文件 |
+| `AxnExtensionError` | 引擎启动时 | 扩展模块未安装、注册 verb 与内置冲突 |
+| `AxnThemeError` | 引擎启动时 | theme token 类型运算不匹配 |
+| `AxnInternalError` | 任意时机 | 引擎代码自身的 bug |
 
 #### 错误信息格式
 
 **脚本作者看到的（AxnParseError / AxnRuntimeError 等）：**
 
 ```
-AxnParseError: Unclosed bracket in '$' line
+AxnParseError: Duplicate label 'morning_scene'
+  → scene.apy, line 5
+  → chapter2.apy, line 103
+
+  3 |
+  4 |
+  5 | label morning_scene:
+      ^
+
+Hint: Labels are globally visible. Rename one to resolve the conflict.
+```
+
+**警告示例（AxnWarning）：**
+
+```
+AxnWarning: [parser] '$' line contains multi-line expression.
+  Bracket continuation is allowed but not recommended.
+  Behavior may be undefined in some contexts.
   → scene.apy, line 12
 
   10 |
@@ -6086,7 +6358,8 @@ AxnParseError: Unclosed bracket in '$' line
             ^
   13 |     1 + 2
 
-Hint: Multi-line Python belongs in a 'python:' block.
+Hint: Use a 'python:' block for multi-line expressions.
+  Add 'ignore_multiline_dollar = true' in options_window.apy to suppress this warning.
 ```
 
 格式规则：
@@ -6099,6 +6372,7 @@ Hint: Multi-line Python belongs in a 'python:' block.
 边界情况：
 - 文件开头不足 2 行时，只显示实际存在的行
 - 文件末尾没有后 1 行时，显示 `# EOF` 占位
+- 多位置错误（label 冲突、循环引用）：所有位置均列出
 
 **引擎内部错误（AxnInternalError）：**
 
@@ -6149,7 +6423,7 @@ AxnWarning: [scheduler] 'wait for all' has no finite transforms to wait for.
 
 | 错误场景 | Hint 内容 |
 |----------|-----------|
-| `$` 行括号未闭合（旧行为，现已改为警告） | 改用 `python:` 块 |
+| `$` 行括号续行 | 改用 `python:` 块 |
 | `with store` 内出现下标访问 | 先在 `python:` 块算好再赋值 |
 | `menu as` 内出现 `jump` | `menu as` 不允许跳转，改用 `menu` |
 | `say` 传入静态角色名 | 改用 `角色:` 语法 |
@@ -6157,25 +6431,38 @@ AxnWarning: [scheduler] 'wait for all' has no finite transforms to wait for.
 | label 命名冲突 | 列出所有冲突位置 |
 | 循环 `include` | 打印完整引用链 |
 | 循环继承 | 打印继承链 |
+| `AxnVoiceError` 短路径 | 列出已搜索路径，建议完整路径或声明 `voice_ext` |
+| `AxnInterpolationError` | 提示先用 `$` 块预计算 |
+| `AxnConstError` | 说明是 const，建议改用普通变量 |
+| `then` 后接 `repeat forever` | 说明 `then` 要求有限动画 |
+| `animation` 块内含 Python 块 | 建议改用 `label` + Python 块处理 |
+| `sta label` 内含 `$` 块 | 说明 `sta` 不允许动态代码 |
+| `parallel` 内出现 `checkpoint` | 建议移到 parallel 块之后 |
+| `call ... as result if ...` | 条件不满足时返回值语义不明，退回 `if` 块 |
+| `show` 位置参数含纯数字 | 缺失位置关键字，建议 `(duration=N)` 具名写法 |
 
 #### 错误处理矩阵
 
 ```
-错误类型              开发模式（引擎运行）        发布包
-─────────────────────────────────────────────────────────────
-AxnParseError        终端完整报错 + 停止          编译阶段拦截，不进包
-AxnCompileError      终端完整报错 + 停止          编译阶段拦截，不进包
-AxnWarning           终端显示 + 继续运行          完全静默
-AxnTypeError         终端完整报错 + 继续          完全静默
-assert               执行 + 报错                  剥离
-AxnNameError         终端完整报错 + 停止          错误界面 + crash.log
-AxnJumpError         终端完整报错 + 停止          错误界面 + crash.log
-AxnSaveError         终端完整报错                 错误界面 + crash.log
-AxnInternalError     完整 Python traceback        错误界面 + crash.log
-AxnAssetError        终端完整报错 + 停止          静默 + crash.log
-  └── 图片/立绘      同上                         不渲染 + crash.log
-  └── 音视频         同上                         跳过 + crash.log
-  └── AxnVoiceError  同上                         静默无声 + crash.log
+错误类型                开发模式（引擎运行）          发布包
+──────────────────────────────────────────────────────────────────
+AxnParseError          终端完整报错 + 停止           编译阶段拦截，不进包
+AxnCompileError        终端完整报错 + 停止           编译阶段拦截，不进包
+AxnWarning             终端显示 + 继续运行           完全静默
+AxnTypeError           终端完整报错 + 继续           完全静默（debug 专属）
+assert                 执行 + 报错                   剥离
+AxnNameError           终端完整报错 + 停止           错误界面 + crash.log
+AxnJumpError           终端完整报错 + 停止           错误界面 + crash.log
+AxnConstError          终端完整报错 + 停止           错误界面 + crash.log
+AxnValueError          终端完整报错 + 继续           错误界面 + crash.log
+AxnInterpolationError  终端完整报错 + 继续           错误界面（降级显示原始文本）+ crash.log
+AxnSaveError           终端完整报错                  错误界面 + crash.log
+AxnExtensionError      终端完整报错 + 停止           编译阶段拦截，不进包
+AxnInternalError       完整 Python traceback         错误界面 + crash.log
+AxnAssetError          终端完整报错 + 停止           静默 + crash.log
+  └── 图片/立绘        同上                          不渲染 + crash.log
+  └── 音视频           同上                          跳过 + crash.log
+  └── AxnVoiceError    同上                          静默无声 + crash.log
 ```
 
 发布包中保留的错误统一走两层处理：
@@ -6248,20 +6535,28 @@ class Lexer:
 
 **缩进规则：**
 - 同一文件内必须使用统一的缩进单位（空格数量或 Tab），不允许混用
-- 第一次遇到缩进时记录该文件的缩进单位，后续不一致时报错
-- 不限制缩进数量（2、3、4、5 均可），但同一文件必须统一
-- Tab 与空格不允许在同一文件内混用
-- Axn-Editor 默认使用 3 空格缩进
+- 第一次遇到缩进时记录该文件的缩进单位，后续不一致时报错：
 
 ```
 AxnParseError: Inconsistent indentation
   This file uses 3-space indentation (detected at line 2).
+  Found 4-space indentation at line 8.
   → scene.apy, line 8, col 1
 Hint: Use the same indentation unit throughout the file.
 ```
+- 不限制缩进数量（2、3、4、5 均可），但同一文件必须统一
+- Tab 与空格不允许在同一文件内混用
+- Axn-Editor 默认使用 3 空格缩进
 
 **字符串引号：**
-- 只允许双引号 `"`
+- 只允许双引号 `"`，使用单引号时报错：
+
+```
+AxnParseError: Single quotes are not allowed in .apy strings.
+  Use double quotes instead: "text" rather than 'text'.
+  → scene.apy, line 8
+```
+
 - Python 块内不受此限制，单双引号随意
 - Axn-Editor 自动补全只处理双引号
 
@@ -6306,6 +6601,10 @@ class TokenType(Enum):
     ELIF            = auto()
     ELSE            = auto()
     UNLESS          = auto()
+    WHILE           = auto()
+    FOR             = auto()    # for 循环关键字（区别于 wait for 中 for）
+    BREAK           = auto()
+    CONTINUE        = auto()
     MATCH           = auto()
     SHOW            = auto()
     HIDE            = auto()
@@ -6321,6 +6620,7 @@ class TokenType(Enum):
     EXPRESSION      = auto()
     SAY             = auto()
     NARRATE         = auto()
+    NVL             = auto()
     WITH            = auto()
     ANIMATION       = auto()
     TRANSFORM       = auto()
@@ -6340,6 +6640,7 @@ class TokenType(Enum):
     THEME           = auto()
     APPLY           = auto()
     EMIT            = auto()
+    SIGNAL          = auto()
     ON              = auto()
     FLAG            = auto()
     CONST           = auto()
@@ -6348,12 +6649,21 @@ class TokenType(Enum):
     ASSERT          = auto()
     MODAL           = auto()
     INPUT           = auto()
+    NOTIFY          = auto()
+    EXPOINT         = auto()
+    AFTER           = auto()    # after N: 延迟执行块
+    DEFER           = auto()    # defer: label 退出时执行
+    ONCE            = auto()    # once per_session/per_playthrough/ever
+    UNWIND          = auto()    # unwind 展开调用栈
+    EXIT            = auto()    # exit 退出游戏
+    SNAPSHOT        = auto()    # snapshot/restore 手动状态快照
+    RESTORE         = auto()
+    REPEAT          = auto()    # repeat N: 固定次数重复块
     PYTHON          = auto()    # python: 块关键字
     NARRATOR        = auto()    # 保留关键字
     STA             = auto()
     DYN             = auto()
     AS              = auto()
-    FOR             = auto()
     FROM            = auto()
     IN              = auto()
 
@@ -7034,6 +7344,14 @@ engine:
     allow_fake_error_screen = false   # 默认关闭，设为 true 才允许 show error_screen
 ```
 
+未启用时使用 `show error_screen` 会运行时输出警告并忽略：
+
+```
+AxnWarning: [engine] 'show error_screen' is disabled.
+  Set 'engine: allow_fake_error_screen = true' in options_window.apy to enable.
+  → scene.apy, line 42
+```
+
 #### 成就系统（Achievement）
 
 成就注册、触发、持久化存储（`persistent`），以及平台 API 对接。
@@ -7702,7 +8020,7 @@ engine:
         smoothing = 0.15       # 插值平滑系数（0 = 即时，1 = 不移动）
 ```
 
-#### 通知系统（Notice）
+#### 通知系统（Notify）
 
 **引擎层**：
 
@@ -7717,11 +8035,11 @@ engine:
 统一抽象接口，`.apy` 层无需感知平台差异：
 
 ```apy
-# 游戏内通知
-notice show "解锁了新CG：夏日记忆" (icon="ui/cg_icon.png", duration=3.0, priority=normal)
+# 游戏内通知（核心指令）
+notify "解锁了新CG：夏日记忆" (icon="ui/cg_icon.png", duration=3.0, priority=normal)
 
 # 系统级通知（游戏在后台或最小化时）
-notice system "新内容已下载完成" (subtitle="第三章现已可玩", icon="app_icon.png")
+notify system "新内容已下载完成" (subtitle="第三章现已可玩", icon="app_icon.png")
 ```
 
 **`.apy` 模板**：
@@ -7730,7 +8048,7 @@ notice system "新内容已下载完成" (subtitle="第三章现已可玩", icon
 
 ```apy
 engine:
-    notice:
+    notify:
         position  = "top_right"      # top_right / top_center / bottom_right 等
         max_stack = 3                # 同时显示上限
         duration  = 3.0              # 默认持续时间（秒）
@@ -8611,7 +8929,15 @@ unwind to morning_scene       # 展开到指定 label（必须在当前栈上，
 
 `return` 只退出当前 label，回到直接调用方；`unwind` 展开整个栈，适合从任意嵌套深度强制返回到起点（如全局错误恢复、章节强制结束）。
 
-`unwind to label` 的目标必须在当前 call 栈上，否则运行时抛 `AxnRuntimeError`，不静默处理。
+`unwind to label` 的目标必须在当前 call 栈上，否则运行时抛 `AxnRuntimeError`：
+
+```
+AxnRuntimeError: 'unwind to morning_scene': target label is not on the current call stack.
+  Current call stack: start → chapter1_battle → boss_phase_2
+  'morning_scene' was not found in the call chain.
+  → scene.apy, line 8
+Hint: Use 'jump morning_scene' to unconditionally jump, or ensure the label was 'call'ed before 'unwind to'.
+```
 
 ---
 
@@ -9806,7 +10132,14 @@ translation block "morning_greeting":
         @ "日光が窓から差し込んでいる。"
 ```
 
-同一 block 内所有语言的行数必须一致，否则解析期报错。
+同一 block 内所有语言的行数必须一致，否则解析期报错：
+
+```
+AxnParseError: Line count mismatch in 'translation block "morning_greeting"'.
+  zh: 3 lines, en: 2 lines, ja: 3 lines.
+  All languages within a translation block must have the same number of dialogue lines.
+  → scene.apy, line 45 (en section is missing a line)
+```
 
 **翻译继承（避免重复）：**
 
