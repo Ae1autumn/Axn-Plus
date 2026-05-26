@@ -120,6 +120,8 @@ define autumn:
     color #ff8800
     sprites "assets/autumn/"
     voice_prefix "vo/autumn/"
+    voice_delay 0.0             # 语音开始播放相对于文字开始显示的偏移（秒）
+                                # 正值 = 语音延迟播放，负值 = 语音提前（文字等语音）
     default_expression "neutral"
     side_image "ui/autumn_side.png"
     font "fonts/handwriting.ttf"
@@ -898,18 +900,64 @@ engine:
 
 #### 对话历史（Backlog）
 
-引擎层维护历史 buffer，UI 层由标准库模板提供。
+引擎层维护历史 buffer，UI 层由标准库模板提供（`screen`，因为 Backlog 没有返回值需求）。
+
+**呈现方式**：从下往上阅读（最新条目在底部），滚动查看历史。同一角色的**相邻**连续对话合并显示为一组，满足以下全部条件才合并：中间没有其他角色说话、没有 `scene` / `checkpoint` 打断：
+
+```
+autumn  我说了一句话。
+        这是另一句。        ← 合并到同一角色组
+uernal  你说了什么？
+```
+
+`together` / `chorus` 块中各角色各自一条，但视觉上分组标注"同时"，保留语义。
+
+**语音重播**：点击条目触发，需要 `include_voice = true`。
+
+**Backlog 打开时游戏暂停**：引擎自动执行 `pause (freeze_audio=False)`，音乐继续，演出冻结。这是引擎层保证，开发者替换 Screen 时无需手动处理。
+
+**配置项**：
 
 ```apy
 # options_window.apy
 engine:
     history:
-        max_entries      = 200
-        include_voice    = true     # 点击条目可重播语音
-        include_narrator = true
-        include_choices  = false    # 选项不计入历史（可选）
-        persist          = false    # true = 存入 persistent 跨存档保留，false = 仅当次游玩
+        max_entries       = 200
+        include_voice     = true      # 点击条目可重播语音
+        include_narrator  = true
+        include_choices   = false     # 选项不计入历史（可选）
+        persist           = false     # true = 存入 persistent 跨存档保留，false = 仅当次游玩
+        rollback_enabled  = false     # true 时点击角色名可回滚到该条目对应位置
+        merge_consecutive = true      # 同角色连续对话合并显示
 ```
+
+**条目数据结构**：引擎为每条历史记录维护以下字段，Screen 默认只显示 `character` 和 `text`，开发者可访问其余字段自定义 UI：
+
+```python
+@dataclass
+class HistoryEntry:
+    character:  str | None    # 角色名，旁白为 None
+    text:       str           # 已插值、已去标签的纯文本
+    kind:       Literal["dialogue", "narrator", "together", "chorus"]
+    # 以下字段存在但 Screen 默认不显示，开发者可访问
+    voice_path:  str | None
+    expression:  str | None   # 说话时的表情状态名
+    timestamp:   float        # 游戏内时间戳（非现实时间）
+    label:       str          # 来源 label 名
+    line:        int          # 来源行号
+```
+
+**回滚行为**：`rollback_enabled = true` 时，点击角色名触发回滚。Backlog 回滚走引擎现有回滚系统，受 label 的 `rollback=` 策略约束，不是独立实现。点击超出回滚范围的条目时静默忽略或显示"此处不可回滚"提示（开发者在 Screen 中实现）。
+
+**多语言**：Backlog 存储的是**已插值的最终文本**，不是原始 key。切换语言后，历史记录不追溯更新，只影响之后新产生的条目。
+
+**`<w>` 中途等待点**：含 `<w>` 的对话行在中途等待时打开 Backlog，历史记录显示整行文本，不反映打字机当前进度。
+
+**不计入历史的情况**：
+
+- `no_history` 修饰符标记的对话行
+- `window hide (all, mode=skip)` 期间被跳过的对话行（与该指令的设计一致）
+- `<nw>` 行和 `<fast>` 行正常计入历史
 
 脚本层可显式标记不计入历史：
 
@@ -2185,6 +2233,8 @@ AxnWarning: [expoint] 'after_prologue' is defined in multiple files.
 | 文本标签 `<speed=N>` | 对话积木块内富文本编辑器，显示速度倍率字段；与行级 `speed=` 修饰符视觉区分（后者作用于整行） |
 | Ruby 注音 `<rb>` / `<rt>` | 对话积木块内注音编辑器，原文与注音分列显示 |
 | `no_history` 修饰符 | 对话积木块上的"不计入历史"开关 |
+| Backlog `rollback_enabled` | options_window.apy 配置面板；`true` 时历史条目角色名可点击，标注"点击回滚" |
+| Backlog `merge_consecutive` | 编辑器历史预览中相邻同角色条目合并为一组显示 |
 | 局部 label（`.` 前缀） | 脚本区以缩进或折叠形式展示，与全局 label 视觉区分；标注"仅在当前文件可见"；跨文件引用时显示完整路径 `文件名::.label名` |
 | `label (rollback=...)` | label 节点的回滚策略字段，下拉选择 `dialogue` / `checkpoint` / `none` |
 | `window show/hide/auto` | 脚本区对话框控制积木块；`hide (all)` 显示 mode 字段 |
@@ -2437,6 +2487,23 @@ AxnParseError: 'with' is ambiguous in 'show' context. Use 'handle=' for animatio
 
 **`transition` 独立指令**：全屏过渡，不切换任何内容。替代 Ren'Py 独立 `with` 语句在"纯屏幕过渡"场景的用途，语义比 `with dissolve` 更明确（明确是全屏操作，不依附于任何 show/hide/scene）。过渡名与 `show`/`hide`/`scene` 的 `enter`/`exit`/`with` 参数共享同一套过渡库。
 
+**多对象同步转场语法糖**：多个对象需要使用同一转场参数时，可在逗号分隔的并行写法上共享 `(enter=)` / `(exit=)`，无需逐个重复：
+
+```apy
+# 冗余写法（仍然有效）
+show autumn left 0.3 (enter=fade), sophia right 0.3 (enter=fade)
+
+# 语法糖：with 子句作用于同行所有对象
+show autumn left, sophia right 0.3 (with=fade)
+# 等价于各自 enter=fade，duration=0.3，并行执行
+
+# 混用：部分对象有独立参数，with 作为默认值填充未指定 enter 的对象
+show autumn left 0.5 (enter=slidein), sophia right, kenji center (with=fade)
+# autumn 走 slidein，sophia 和 kenji 走 fade，duration 各自独立
+```
+
+`with=` 在 `show` 的并行写法中作为"默认 enter/exit 参数"填充，不是全屏过渡（区别于 `transition` 指令和 `scene` 的 `with=`）。已有 `enter=` 的对象不受影响。GUI 处理：并行节点上显示 `with=` 字段作为默认过渡，各对象节点的 `enter=` 显示"覆盖"标记。
+
 **`queue` 音频指令**：将音频加入通道串行队列，当前播放结束后自动播放。引擎内部队列机制已存在（上限16，可配置），`queue` 是对外暴露的脚本接口。参数结构与 `play` 完全一致。
 
 **`expoint` 设计原则**：定位是脚本流程层的可选 call，专为内容注入设计的受控接口。三个操作（声明/定义/调用）完全独立，可单独存在。核心语义：调用时运行时查找定义，有则执行，无则静默跳过。多次定义追加执行并警告；`(replace)` 覆盖语义不警告。定义块内禁止 `jump`（破坏"注入后继续主流程"语义），允许 `call`。面向 MOD 作者、DLC、内容扩展，不推荐用于引擎或开发者生成的 Python 内容。
@@ -2635,6 +2702,8 @@ flag:
 
 **`checkpoint`**：引擎指令层语法，GUI 完整解析为存档点积木块。`thumbnail=current` 表示截取当前帧作为存档缩略图，为引擎保留关键字，不暴露为 Python 值。存档时完整序列化 call 栈，读档后从记录的精确 PC 位置继续执行，不从 label 入口重跑。`checkpoint` 可以出现在任意位置，包括被 `call` 的子 label 里。
 
+**`thumbnail=current` 截图时机**：截图在 `checkpoint` 指令执行时、**当前帧所有显示指令已提交、下一帧渲染开始前**触发，截取的是已完成合成的当前帧 surface。这保证截图反映 `checkpoint` 所在位置的实际画面，而不是上一帧的旧状态。若 `checkpoint` 紧跟在 `show`/`scene` 等显示指令之后，这些指令的结果已包含在截图中。
+
 **`checkpoint` 存档时机**：存档在 `checkpoint` 指令执行时触发，记录的恢复起点是 `checkpoint` 的**下一条指令**的 PC。读档后直接从该位置继续执行，`checkpoint` 指令本身不重新执行，不触发二次存档。
 
 `checkpoint` 之前已发生的副作用（外部 API 调用、不可逆操作等）读档后不会重新执行。需要在读档后重现的副作用，应放在 `checkpoint` 之后——读档后这些代码会正常执行。
@@ -2763,13 +2832,17 @@ AxnParseError: Dialogue line is not allowed in a non-interactive track.
 
 **`parallel` 块与存档的边界**：`checkpoint` 禁止出现在 `parallel` 块内（解析期报错）；`checkpoint` 须在所有 track 完全结束后执行，否则运行时跳过并警告；`parallel` 执行期间自动存档挂起，手动存档挂起并显示 UI 提示，两者均在块完全结束后触发。
 
+**`checkpoint` 禁止出现的位置汇总**（解析期报错）：`parallel` 块内、`after` 块内、`defer` 块内、`animation` 块内、`nvl:` 块内（编译期警告）。`checkpoint` 可以出现在任意 `call` 深度，引擎序列化完整调用链，读档后从 `checkpoint` 下一条指令继续，调用链完整重建。
+
+**手动存档挂起触发条件**：`parallel` 执行期间、`defer` 块执行期间。挂起期间二次存档请求合并为同一次（不排队）；挂起期间玩家读档则取消挂起的存档请求；`call screen save_menu` 里主动存档不受挂起影响（属于玩家主动行为，不在危险时机内）。
+
 **`on enter` 读档触发行为**：默认（`restore=auto`）读档后不重新触发，依赖状态快照恢复；`restore=always` 读档后重新触发，开发者自行保证幂等性；`restore=never` 读档后永不触发。`restore=always` 时 debug 模式输出幂等性提醒。
 
 **文本标签系统**：对话行内使用 `<tag>` 语法，与 `{expr}` 插值双轨并行，`TextRenderer` 统一解析。`<w>` 在句中产生中途等待点，`DIALOGUE` 指令内部维护状态机处理多等待点；`<nw>` 说完不等点击直接推进。`<w>` 产生的中途等待点不作为回滚检查点，整行对话作为一个回滚单元。
 
 **回滚系统分级策略**：`rollback=dialogue`（默认）只回滚对话显示状态，Python 状态变更不回滚；`rollback=checkpoint` 回到最近存档点的完整状态；`rollback=none` 完全禁止回滚。策略在 label 声明处指定，不做全量状态快照链，务实取舍开销与功能的平衡。
 
-**对话历史 buffer**：引擎层维护，UI 层由标准库模板提供。`no_history` 修饰符标记不计入历史的对话行；`<nw>` 行和 `<fast>` 行正常计入历史。buffer 是否持久化到 `persistent` 由 `options_window.apy` 配置。
+**对话历史 buffer**：引擎层维护，UI 层由标准库 `screen` 模板提供。`no_history` 修饰符标记不计入历史的对话行；`window hide (all, mode=skip)` 期间跳过的对话行同样不计入历史；`<nw>` 行和 `<fast>` 行正常计入历史。buffer 是否持久化到 `persistent` 由 `options_window.apy` 配置。Backlog 打开时引擎自动执行 `pause (freeze_audio=False)`，开发者替换 Screen 时无需手动处理。`rollback_enabled = true` 时 Backlog 回滚走引擎现有回滚系统，受 label 的 `rollback=` 策略约束。历史记录存储已插值的最终文本，切换语言后不追溯更新旧条目。
 
 **动态指令 `$` 前缀**：`show $sprite` / `hide $sprite` / `call $target` / `jump $target` 统一用 `$` 前缀标记运行时求值，与 `say speaker` 的动态变量语义一致，一条规则覆盖全部动态指令。`$` 前缀只接受单一 store 变量名，不接受任意表达式，保证 GUI 可解析调用点。
 
@@ -3471,6 +3544,77 @@ preferences:
     accessibility_reduce_flashing = false    # 禁止高频闪烁效果（频率 > 3Hz 的亮度变化）
 ```
 
+**`accessibility_high_contrast` 的实现机制**：
+
+开启后引擎自动将当前 `theme` 的颜色 token 替换为高对比度版本，无需开发者手动维护第二套 theme。替换规则：
+
+- 背景色 → 纯黑（`#000000`）
+- 文字色 → 纯白（`#ffffff`）
+- 强调色 → 高饱和度保留（不反转，只提高对比度至 WCAG AA 标准，对比度比 ≥ 4.5:1）
+- 半透明叠加层（`overlay`）→ 不透明度减半，避免遮挡内容
+
+引擎对内置 UI 模板（存档菜单、设置界面等标准 Screen）自动应用此替换。开发者自定义 UI 同样生效，因为替换发生在 theme token 层，所有引用 `$color.*` 的控件自动跟随。
+
+如需完全自定义高对比度视觉，在 `options_window.apy` 中声明独立 theme：
+
+```apy
+theme high_contrast:
+    color.primary   #ffffff
+    color.surface   #000000
+    color.text      #ffffff
+    color.danger    #ff6666
+    # ...
+
+# options_window.apy
+engine:
+    accessibility:
+        high_contrast_theme = "high_contrast"    # 指定时使用此 theme，不走自动替换
+```
+
+**`accessibility_reduce_flashing` 的抑制边界**：
+
+频率 > 3Hz 的亮度变化被视为"高频闪烁"，引擎在以下位置自动抑制：
+
+| 来源 | 抑制方式 |
+|------|---------|
+| `transform` 的 `color_multiply` / `alpha` 动画 | 检测每秒变化周期数，超过 3Hz 时 clamp 到 3Hz |
+| `define particle` 的 `color_cycle` | 周期超过 3Hz 时降速到 3Hz |
+| `after` 块触发的 `camera shake` | 抑制（camera shake 本质是高频位移，等效于闪烁刺激） |
+| `camera shake` 指令（`frequency` 参数） | `frequency > 3` 时自动 clamp 到 3 |
+| `repeat forever` 的高频 transform | 检测 keyframe 间隔，间隔 < 1/3 秒的循环抑制 |
+| 脚本层 Python 直接操作的渲染状态 | **不抑制**，开发者自行负责合规性 |
+
+抑制不报错，debug 模式输出一次 `AxnWarning`：
+
+```
+AxnWarning: [accessibility] 'flash_red' transform frequency clamped to 3Hz
+  (accessibility_reduce_flashing = true).
+  Original frequency: 8Hz → clamped to: 3Hz
+  → characters.apy, line 42
+```
+
+**键盘全流程可操作性承诺**：
+
+引擎内置的所有标准 Screen（存档/读档界面、设置界面、暂停菜单、确认退出对话框、Backlog、右键菜单）保证键盘可完整操作，无需鼠标。具体保证：
+
+- 所有可交互元素均在 `focus_group` 中，Tab / Shift+Tab 可循环切换
+- Enter / Space 激活当前焦点控件
+- Escape 关闭当前模态框或返回上一级
+- 方向键在 `radio_group`、`slider`、`tab_bar` 内导航
+- 所有焦点状态有明确的视觉样式（`focused` 状态，内置 theme 默认有边框高亮）
+
+开发者自定义 Screen 不强制要求，但引擎提供 `axn check --keyboard` 检查工具，扫描 Screen 定义中是否有可交互控件未加入任何 `focus_group`：
+
+```
+axn check --keyboard
+
+[✗] 3 个可交互控件未加入 focus_group：
+    → ui/custom_menu.apy line 24: button "开始游戏"
+    → ui/custom_menu.apy line 26: button "设置"
+    → ui/custom_menu.apy line 28: button "退出"
+    建议：在父容器声明 'focus_group "main_menu"' 并通过 'focus_order' 指定顺序
+```
+
 ### 脚本层访问
 
 ```apy
@@ -3701,6 +3845,16 @@ AxnWarning: 'checkpoint' skipped: a 'parallel' block has not fully completed.
 **自动存档**：`parallel` 块执行期间禁用自动存档，块完全结束后恢复。行为对用户透明，不需要任何语法支持。
 
 **手动存档**：存档请求挂起，`parallel` 块完全结束后自动执行。挂起期间 UI 显示"存档将在当前演出完成后执行"的提示。可在 `options_window.apy` 中配置改为拒绝行为（弹提示后丢弃请求）。
+
+**手动存档挂起的完整规则**（适用于所有存档不安全时机，包括 `parallel`、`defer` 块执行期间）：
+
+| 场景 | 行为 |
+|------|------|
+| 挂起期间玩家**再次**触发存档 | 合并为同一次，不排队，静默忽略第二次请求 |
+| 挂起期间玩家**读了另一个存档** | 挂起的存档请求取消，读档覆盖了当前状态 |
+| `call screen save_menu` 里主动选槽存档 | `call screen` 本身不在危险时机内，正常存档，不受挂起影响 |
+| 挂起等待时间过长 | 不超时，UI 提示持续显示，让玩家知道存档不会丢失 |
+| `engine.quick_save_enabled = False` 期间快速存档 | 静默忽略，不显示提示（已禁用） |
 
 ### `on enter` 读档后的触发行为
 
@@ -6254,6 +6408,44 @@ axn_plus/
 
 `parser/` 独立，供 Axn-Editor 的 LSP 插件直接复用，不与运行时耦合。LSP 插件复用 `parser/incremental_parser.py`，不使用全量三遍扫描器，保证实时补全响应速度。两层实现共享 `lexer.py` 和 `ast_nodes.py`。`core/` 中无任何 pygame 或 Qt import，后端通过 `backends/base.py` 的抽象接口交互。`cli/` 提供 `axn init` / `axn run` / `axn build` / `axn test` / `axn extract-strings` / `axn check-strings` 子命令。
 
+### LSP 语义感知跳转（Go to Definition）
+
+LSP 插件在增量 parser 的符号表基础上，提供以下跨文件语义跳转，覆盖 `.apy` 开发的高频场景：
+
+| 触发位置 | 跳转目标 |
+|---------|---------|
+| `call morning_scene()` | `label morning_scene:` 定义处 |
+| `jump route_a` | `label route_a:` 定义处 |
+| `show autumn` | `define char autumn:` 定义处 |
+| `expression autumn happy` | `define char autumn:` 内的 `expressions:` 中 `happy` 条目 |
+| `show lantern` | `define image lantern:` 定义处 |
+| `call animation boss_enter` | `animation boss_enter:` 定义处 |
+| `store["relationship"]` | `flag: relationship` 声明处 |
+| `$ relationship["autumn"]` | `flag: relationship` 声明处 |
+| `use base_dialog(...)` | `screen base_dialog:` 定义处 |
+| `health_bar(80, 100)` | `gui health_bar(...):` 定义处 |
+| `apply danger_style` | `mixin danger_style:` 定义处 |
+| `style=danger_btn` | `mixin danger_btn:` 定义处 |
+| `expoint after_prologue` | `expoint after_prologue:` 定义处（如有） |
+| `watch store["hp"]` | `flag: hp` 声明处 |
+| `on signal "autumn_mood_changed":` | `signal "autumn_mood_changed"` 发送处（列出所有） |
+| `$token` 引用（如 `$color.primary`） | `theme default:` 中对应 token 定义处 |
+
+**Find References（反向跳转）**：从定义跳转到所有引用处：
+
+- `label morning_scene:` → 列出所有 `jump`/`call morning_scene` 的位置
+- `define char autumn:` → 列出所有 `show autumn`/`autumn: "..."` 的位置
+- `flag: relationship` → 列出所有 `store["relationship"]` / `set relationship` 的位置
+- `mixin danger_style:` → 列出所有 `apply danger_style` 的位置
+
+**悬停提示（Hover）**：
+
+- `show autumn (expression=happy)` → 悬停显示 autumn 的完整 `define char` 字段摘要
+- `store["relationship"]` → 悬停显示 flag 声明（类型、默认值、声明位置）
+- `$color.primary` → 悬停显示 token 当前值和所在 theme
+
+**实现说明**：语义跳转依赖第一遍和第二遍扫描结果（全局名字集合 + 符号表）。增量 parser 在文件修改后重新执行受影响文件的三遍扫描，更新符号表，保证跳转目标始终准确。跨文件跳转通过全局符号表解析，不需要当前文件 `import` 目标文件。
+
 ---
 
 ## 多通道音频
@@ -7276,6 +7468,20 @@ filter music none
 filter music (reverb(room=0.8)) 1.0
 ```
 
+**DSP 参数动画（单参数渐变）**：`->` 语法对单个参数做渐变，不替换整个滤波器，适合战斗场景压迫感逐渐增强、梦境过渡等需要参数随时间变化的演出：
+
+```apy
+filter music (reverb.room -> 0.8) 2.0      # room 参数在 2 秒内从当前值渐变到 0.8
+filter music (reverb.damp -> 0.3) 1.0      # 同时可以有多个参数渐变
+filter music (lowpass.cutoff -> 400) 3.0   # 截止频率渐变，电话效果逐渐增强
+```
+
+规则：
+- `->` 只作用于已存在的滤波器的参数，目标滤波器不存在时运行时报 `AxnRuntimeError`
+- 多个参数可以同时渐变，各自独立计时
+- 渐变期间再次触发同参数的渐变，从当前值重新开始（不排队）
+- 渐变底层走线性插值，不经过 `transform` 系统的 easing——需要 easing 时，退回 Python 按帧更新
+
 **`voice` 通道的特殊用途**：常用于角色声音变形（危险状态、幻觉、变身场景）：
 
 ```apy
@@ -8088,9 +8294,30 @@ click 5                        # 连续点击 5 次
 choose: "答应她"               # 选择菜单选项（按文本匹配）
 choose index: 0                # 选择第一个选项
 wait label: route_a            # 等待执行流到达指定 label
+
+# store 值断言
 assert store: flag_agreed == True
 assert store: day >= 1
+
+# 执行位置断言
 assert label: morning_scene    # 断言当前在指定 label
+
+# 音频状态断言
+assert audio playing: "bgm/morning.ogg" channel=music   # 断言指定文件正在播放
+assert audio playing channel=music                        # 断言 music 通道有音频在播（不限文件）
+assert audio stopped channel=voice                        # 断言通道静默
+
+# 显示状态断言
+assert visible: autumn                          # 断言角色在场景中可见
+assert visible: autumn at=left                  # 断言可见且在指定位置
+assert visible: autumn expression=happy         # 断言可见且当前表情
+assert hidden: sophia                           # 断言不可见
+assert scene: "assets/bg/room.png"             # 断言当前背景
+
+# 转场状态断言
+assert transition: dissolve                     # 断言当前正在进行指定转场
+assert no_transition                            # 断言当前无转场在进行
+
 click until label: ch1_end     # 持续点击直到到达指定 label（有安全上限）
 screenshot: "tests/shots/ch1_end.png"   # 截图对比（与基准图对比，差异超阈值报错）
 ```
@@ -8099,8 +8326,8 @@ screenshot: "tests/shots/ch1_end.png"   # 截图对比（与基准图对比，�
 
 ```
 axn test tests/basic_flow.test          # 运行单个测试
-axn test tests/                            # 运行目录下所有测试
-axn test --headless tests/                 # 无头模式（不显示窗口）
+axn test tests/                         # 运行目录下所有测试
+axn test --headless tests/              # 无头模式（不显示窗口）
 axn test --record tests/basic_flow.test # 录制模式：实际操作游戏，自动生成测试脚本
 ```
 
@@ -8935,10 +9162,14 @@ axn test --from-state tests/states/ch2_angry.json --label chapter2_morning
 | 交互式编导器 | 开发模式内置，Shift+D | 立绘/表情/镜头实时调整，生成代码 |
 | label 跳转（传送门） | 控制台内 | `vm.jump_to(label)` |
 | 自动重载 | 开发模式默认开启 | `watchdog` + HotReloader |
-| 自动测试 | `axn test` | `.test` 脚本 + `--from-state` |
+| 自动测试 | `axn test` | `.test` 脚本 + `--from-state`，含音频/显示/转场断言 |
+| 演出录制回放 | `axn record` | 帧级状态录制，演出回归测试 |
+| 节奏分析 | `axn pacing` | 对话密度、分支间距、角色发言占比 |
+| 演出时间轴导出 | `axn export-timeline` | 输出 HTML/SVG，供演出导演浏览器审核 |
 | 翻译提取 | `axn extract-strings` | 生成翻译模板 |
 | 翻译检查 | `axn check-strings` | 完整性验证 |
-| 静态分析 | `axn lint` | 废弃用法、未定义跳转等 |
+| 静态分析 | `axn lint` | 废弃用法、未定义跳转、watch/after/defer 违规等 |
+| 键盘可操作性检查 | `axn check --keyboard` | 扫描未加入 focus_group 的可交互控件 |
 | 归档打包 | `axn build --pack` | 生成 `.npa` 归档 |
 | 截图 | F12（开发模式） | 保存到 `screenshots/` |
 
@@ -9251,6 +9482,19 @@ after 2.0:
 
 `after` 块内只允许引擎指令，不允许对话行和 Python 块（保证 GUI 完整可解析）。
 
+**存档规则**：`after` 块内**禁止出现 `checkpoint`**，解析期报错。`after` 是异步触发的，其执行时机不确定，无法作为存档恢复点：
+
+```
+AxnParseError: 'checkpoint' is not allowed inside an 'after' block.
+  'after' triggers asynchronously; its execution time is non-deterministic.
+  Place 'checkpoint' in the main execution flow instead.
+  → scene.apy, line 12
+```
+
+`after` 块触发期间，若主流恰好在 `checkpoint`，存档正常执行，`after` 块的执行状态不纳入存档。
+
+**读档后行为**：读档后，**所有未触发的 `after` 块计时器重置**。若存档时某个 `after` 计时器已在倒计时但还未触发，读档后该计时器从头开始，不从中途恢复。`after` 设计用于演出效果，不是游戏逻辑，不值得精确恢复计时进度。
+
 ---
 
 ### `repeat` 块 — 固定次数重复执行
@@ -9290,6 +9534,16 @@ label battle_scene:
 - 块内只允许引擎指令和 Python 块，不允许对话行（避免退出时产生等待点）
 - 多个 `defer` 块按声明顺序逆序执行（后声明的先执行，类似栈展开）
 - `unwind` 触发时，经过的每个 label 的 `defer` 块依次执行
+- `defer` 块内**禁止出现 `checkpoint`**，解析期报错。label 退出是状态过渡期，不是合法的存档恢复点：
+
+```
+AxnParseError: 'checkpoint' is not allowed inside a 'defer' block.
+  'defer' executes during label exit, which is a state transition.
+  Place 'checkpoint' in the main execution flow before or after the label.
+  → scene.apy, line 8
+```
+
+- `defer` 块执行期间，**手动存档请求挂起**，`defer` 块完全执行完毕、call 栈稳定后自动执行挂起的存档。`defer` 执行时间通常极短，玩家无感知，不显示额外 UI 提示。
 
 GUI 处理：label 节点底部显示 defer 块，标注"离开时执行"，视觉上与正常执行流区分。
 
@@ -9654,7 +9908,50 @@ GUI 处理：独立事件钩子面板展示，与 `on enter` / `on key` 并列�
 
 ---
 
-### `#region` / `#endregion` — 代码折叠
+### `watch` — 数据层响应式观察
+
+`watch` 在纯数据层监听 `store` 变量变化，不依赖任何显示对象，全局生效。与 `triggers`（角色可见时监听）和 `on signal`（手动触发）的定位不重叠——`watch` 解决的是"某个数值到达阈值时自动触发游戏逻辑"的场景。
+
+```apy
+watch store["relationship"]["autumn"]:
+    when >= 80: unlock achievement true_route
+    when <= 10: set flag_locked_out = True
+
+watch store["hp"]:
+    when <= 0:
+        signal "player_dead"
+    when < 20:
+        play sound "sfx/heartbeat.ogg" (loop)
+    when >= 20:
+        stop sound
+
+watch store["day"]:
+    when != store["prev_day"]:
+        set prev_day = store["day"]
+        call daily_event_check
+```
+
+**规则：**
+
+- `watch` 只允许出现在文件顶层，与 `on enter` / `on key` / `on signal` 平级
+- 条件只允许 `store` 变量的简单比较（`==`、`!=`、`>`、`<`、`>=`、`<=`），不允许函数调用，保证每帧检查成本可控
+- 每帧检查所有 `watch` 条件，`false → true` 时触发一次，不重复触发（与 `triggers` 规则一致）
+- 回滚后清空所有 `watch` 的触发状态，等下次 `false → true` 才重新触发
+- `when` 块内只允许引擎指令和 `set` 指令，不允许对话行（`watch` 是后台逻辑，不应产生等待点）；需要对话行时用 `signal` 触发再在 label 里处理
+- 多个 `watch` 块同帧触发时，按文件扫描顺序依次执行
+
+**`watch` 与 `triggers` 的边界：**
+
+| | `triggers` | `watch` |
+|---|---|---|
+| 依附对象 | `define char` / `define image`，角色可见时才监听 | 全局，始终监听 |
+| 适用场景 | 角色显示状态响应数值变化（表情、动画） | 游戏逻辑响应数值变化（成就、flag、信号） |
+| 块内允许 | `transform`、`call animation`、`emit` | 引擎指令、`set`、`signal`、`unlock` |
+| 块内对话行 | ❌ | ❌ |
+
+**性能说明**：`watch` 每帧对所有声明的条件做一次检查。条件为简单比较，无函数调用，单次检查成本极低（等价于一次 dict 查找 + 数值比较）。大量 `watch` 声明（>100 个）时 debug 模式输出警告提示审查必要性。
+
+**Round-Trip**：`watch` 块对应独立事件钩子面板，与 `on enter` / `on signal` 并列展示；条件字段和触发操作完整可解析；`when` 条件以可视化比较节点呈现。
 
 ```apy
 #region 第一章：清晨
@@ -11231,10 +11528,135 @@ axn trace --label morning_scene --output trace.json
 - `#region` / `#endregion` 不匹配
 - `beat` 指令但当前 music 未声明 BPM
 - `signal` 发出但没有任何 `on signal` 监听（可能是遗漏，警告可 ignore）
+- `watch` 块内条件引用了未在 `flag` 声明的变量（警告可 ignore）
+- `after` 块内出现 `checkpoint`（报错）
+- `defer` 块内出现 `checkpoint`（报错）
 
 ---
 
-## 引擎核心补充
+### `axn pacing` — 对话节奏分析
+
+静态分析工具，不需要运行游戏，直接从 AST 计算节奏指标。视觉小说最常见的制作问题是节奏失控——某章节对话密度过高、分支之间间隔太长，这些用肉眼逐行核查成本极高。
+
+```
+axn pacing                         # 全项目分析
+axn pacing --label ch2             # 指定 label
+axn pacing --file chapter2.apy     # 指定文件
+axn pacing --warn-threshold 300    # 超过 N 行无分支时警告（默认 200）
+```
+
+输出示例：
+
+```
+第2章节奏分析（chapter2.apy）：
+
+  对话行总数：        1,203 行
+  等待点总数：          847 个（平均 1.4 行/等待点）
+  选择点（menu）：       12 个
+  最长连续无选择段：    431 行（chapter2.apy:203–634）  ← 警告：超过阈值 200 行
+  选择密度：            1 个/每 100 行
+  checkpoint 数：         3 个
+  平均 checkpoint 间距：401 行
+
+  角色发言分布：
+    autumn:    612 行（50.9%）
+    narrator:  289 行（24.0%）
+    sophia:    178 行（14.8%）
+    其他:       124 行（10.3%）
+
+建议：
+  → chapter2.apy:420 附近连续 180 行无选择，可考虑增加分支或 checkpoint
+  → autumn 发言占比超过 50%，如需增加互动感可适当穿插菜单
+```
+
+节奏指标说明：
+
+| 指标 | 含义 |
+|------|------|
+| 等待点 | 需要玩家点击才能推进的位置（`WAIT_CLICK` 指令） |
+| 选择点 | `menu` / `choice` 指令 |
+| 最长连续无选择段 | 两个 `menu` 之间的最长对话行数 |
+| 选择密度 | 平均每 N 行出现一个选择 |
+
+**Round-Trip**：编辑器中每个 label 节点右上角可显示节奏警告图标（超过阈值时）；点击跳转到 `axn pacing` 完整报告。
+
+---
+
+### `axn record` — 演出录制与回放（开发期）
+
+记录一次完整演出运行的每帧状态，导出为可重放的基线文件。用于**演出回归测试**——改了一行 `transform` 或 `animation`，自动检测全局演出有无意外变化，不需要人工逐帧核查。
+
+```
+axn record --label ch1_boss_enter --output recordings/boss_enter.axnrec
+axn record --label ch1_boss_enter --frames 120    # 只录前 120 帧
+```
+
+录制内容（每帧快照）：
+
+- 所有可见对象的屏幕坐标、缩放、旋转、alpha
+- 当前表情状态（`states` / `layers` 各层值）
+- camera 状态（zoom、offset、angle）
+- 当前背景
+- 活跃 transform 列表及当前插值进度
+
+回放与对比：
+
+```
+axn playback recordings/boss_enter.axnrec          # 无头回放，输出差异报告
+axn playback recordings/boss_enter.axnrec --visual  # 可视化回放（叠加显示差异）
+```
+
+差异报告示例：
+
+```
+演出回归对比：boss_enter（基线 vs 当前）
+
+  帧 23：autumn.x_offset 偏差 3.2px（阈值 1px）  ← 失败
+  帧 45：camera.zoom 偏差 0.002（阈值 0.01）     ← 通过
+  帧 67–72：alpha 差异（autumn 在此区间消失 6 帧）← 失败
+
+  通过：89 帧 / 120 帧（74.2%）
+  失败：31 帧
+```
+
+**与截图对比的区别**：`axn test` 的 `screenshot:` 对比的是最终像素，`axn record` 对比的是中间状态（坐标、插值进度），能精确定位是哪个 transform 参数发生了变化，不只是"画面不一样"。
+
+**`options_window.apy` 配置**：
+
+```apy
+engine:
+    record:
+        position_threshold = 1.0    # 坐标差异阈值（px）
+        alpha_threshold    = 0.01   # alpha 差异阈值（0–1）
+        zoom_threshold     = 0.01   # zoom 差异阈值
+```
+
+---
+
+### `axn export-timeline` — 演出时间轴导出
+
+将一个 `label` 或 `animation` 块的演出时序导出为可视化时间轴，供演出导演在浏览器中审核，无需打开引擎。
+
+```
+axn export-timeline --label ch1_boss_enter --output timeline.html
+axn export-timeline --animation boss_enter --output anim_timeline.html
+axn export-timeline --label ch1_morning --format svg --output morning.svg
+```
+
+输出格式（HTML）：横轴为时间（秒），纵轴为轨道，每个事件以色块标注：
+
+| 轨道 | 包含内容 |
+|------|---------|
+| 音频 | `play`/`stop`/`pause` 事件，色块显示文件名和通道 |
+| 角色（每个角色独立轨道） | `show`/`hide`/`expression` 事件，色块显示位置和表情 |
+| 镜头 | `camera move`/`shake`/`reset`/`follow` 事件 |
+| 转场 | 对象级和全屏级过渡，显示类型和时长 |
+| 等待点 | 用户点击等待位置 |
+| UI | `modal`/`window`/`screen` 事件 |
+
+HTML 输出支持缩放和横向滚动，色块悬停显示完整参数。`animation` 块导出时同时显示 transform keyframe 曲线（叠加在对应角色轨道下方）。
+
+---
 
 ### 存档槽元数据查询 API（扩展）
 
