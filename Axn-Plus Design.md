@@ -11779,6 +11779,894 @@ engine.persistent.register_migration(
 
 ---
 
+## 插件系统（Plugin System）
+
+### 设计原则
+
+引擎本体只负责不可替代的核心：Parser、VM、Scheduler、存档、热重载。其余所有扩展能力——包括官方标准库（`axn::*`）——均通过插件机制实现，不集成进引擎本体。这保证引擎不会随功能累积越滚越大，也保证扩展体系的一致性：官方插件和第三方插件遵守完全相同的规则。
+
+### 插件文件格式
+
+每个插件是 `main/axn/` 目录下的**单个 `.py` 文件**。文件结构分两部分：
+
+- **开头**：静态声明（`declare_*` 系列），告诉 Parser 这个插件提供了哪些名字
+- **之后**：用装饰器绑定实际实现函数
+
+```python
+# main/axn/live2d.py
+
+from axn_plus.plugin import Plugin
+
+plugin = Plugin("live2d", version="1.2.0", depends=["spine"])
+
+# ── 静态声明（开头，给 Parser 看）────────────────────────────
+
+plugin.declare_namespace(state={"models": {}, "motions": {}}, version=1)
+plugin.declare_verb("l2d_motion",   positional=["char", "motion"], named={"blend": float, "duration": float})
+plugin.declare_verb("l2d_eye_track",positional=["char"], named={"target": str, "weight": float})
+plugin.declare_subcommand("camera", "dolly",  positional=["target_pos", "duration"], named={"easing": str})
+plugin.declare_subcommand("camera", "orbit",  positional=["char", "duration"], named={"radius": float})
+plugin.declare_extend("show",  params={"l2d_motion": str, "l2d_blend": float})
+plugin.declare_extend("expression", params={"l2d_expression": str})
+plugin.declare_hook("before_show")
+plugin.declare_hook("after_dialogue")
+plugin.declare_hook("before_save")
+plugin.declare_hook("after_load")
+
+# ── 实现（之后，装饰器绑定）──────────────────────────────────
+
+@plugin.verb("l2d_motion")
+def handle_l2d_motion(verb, args, named, store):
+    char     = args[0]
+    motion   = args[1]
+    blend    = named.get("blend", 0.3)
+    duration = named.get("duration", 0.0)
+    _set_motion(char, motion, blend, duration)
+
+@plugin.verb("l2d_eye_track")
+def handle_l2d_eye_track(verb, args, named, store):
+    char   = args[0]
+    target = named.get("target", "mouse")
+    weight = named.get("weight", 1.0)
+    _set_eye_track(char, target, weight)
+
+@plugin.subcommand("camera", "dolly")
+def handle_camera_dolly(subcmd, args, named, store):
+    target_pos = args[0]
+    duration   = args[1] if len(args) > 1 else 1.0
+    easing     = named.get("easing", "ease_in_out")
+    _dolly_camera(target_pos, duration, easing)
+
+@plugin.subcommand("camera", "orbit")
+def handle_camera_orbit(subcmd, args, named, store):
+    char   = args[0]
+    dur    = args[1] if len(args) > 1 else 2.0
+    radius = named.get("radius", 200.0)
+    _orbit_camera(char, dur, radius)
+
+@plugin.extend("show")
+def on_show(event):
+    if "l2d_motion" in event.params:
+        _set_motion(event.char, event.params["l2d_motion"],
+                    event.params.get("l2d_blend", 0.3))
+    return event    # 返回修改后的 event；返回 False 取消执行
+
+@plugin.extend("expression")
+def on_expression(event):
+    if "l2d_expression" in event.params:
+        _set_expression(event.char, event.params["l2d_expression"])
+    return event
+
+@plugin.hook("before_show")
+def on_before_show(event):
+    if event.char in plugin.ns.models:
+        _sync_model_visibility(event.char, True)
+
+@plugin.hook("after_dialogue")
+def on_after_dialogue(event):
+    _sync_lipsync(event.char, event.text)
+
+@plugin.hook("before_save")
+def on_before_save(event):
+    plugin.ns.models = _serialize_models()
+
+@plugin.hook("after_load")
+def on_after_load(event):
+    _reload_all_models(plugin.ns.models)
+
+# ── 内部实现 ─────────────────────────────────────────────────
+
+def _set_motion(char, motion, blend=0.3, duration=0.0): ...
+def _set_eye_track(char, target, weight): ...
+def _dolly_camera(target_pos, duration, easing): ...
+def _orbit_camera(char, duration, radius): ...
+def _set_expression(char, expression): ...
+def _sync_model_visibility(char, visible): ...
+def _sync_lipsync(char, text): ...
+def _serialize_models(): ...
+def _reload_all_models(data): ...
+```
+
+### 五种扩展能力
+
+插件能做的事情分五个正交维度，边界清晰，互不重叠：
+
+| 能力 | 声明方法 | 实现绑定 | 说明 |
+|------|---------|---------|------|
+| 全新动词 | `declare_verb()` | `@plugin.verb()` | 新的 `.apy` 指令 |
+| 现有动词的新子命令 | `declare_subcommand()` | `@plugin.subcommand()` | 如 `camera dolly` |
+| 现有指令的新具名参数 | `declare_extend()` | `@plugin.extend()` | 如 `show (l2d_motion=...)` |
+| 私有状态命名空间 | `declare_namespace()` | `plugin.ns.*` | 不污染 store |
+| 引擎生命周期 Hook | `declare_hook()` | `@plugin.hook()` | 拦截或观察引擎事件 |
+
+**三种扩展层级不可混用**：给 `camera` 注册新子命令用 `declare_subcommand`；给 `show` 增加新具名参数用 `declare_extend`；完全不相关的新功能用 `declare_verb`。混用时引擎启动报 `AxnPluginError`。
+
+### 引擎层 Hook 点完整列表
+
+```python
+engine.hook.on("before_show",        handler)   # show 指令执行前
+engine.hook.on("after_show",         handler)   # show 指令执行后
+engine.hook.on("before_hide",        handler)   # hide 指令执行前
+engine.hook.on("before_dialogue",    handler)   # 每条对话行渲染前
+engine.hook.on("after_dialogue",     handler)   # 每条对话行完成后
+engine.hook.on("before_scene_change",handler)   # scene 指令执行前
+engine.hook.on("after_scene_change", handler)   # scene 指令执行后
+engine.hook.on("before_save",        handler)   # 存档写入前
+engine.hook.on("after_save",         handler)   # 存档写入后
+engine.hook.on("after_load",         handler)   # 读档完成后
+engine.hook.on("label_enter",        handler)   # 任意 label 进入时
+engine.hook.on("label_exit",         handler)   # 任意 label 退出时
+engine.hook.on("store_write",        handler)   # store 任意 key 被写入时
+engine.hook.on("tick",               handler)   # 每帧（慎用，高频）
+engine.hook.on("menu_open",          handler)   # menu 显示时
+engine.hook.on("menu_close",         handler)   # menu 关闭时（含超时）
+engine.hook.on("checkpoint",         handler)   # checkpoint 指令执行时
+```
+
+**脚本层 Hook（`on enter`/`on key`/`on signal`/`watch`）与引擎层 Hook 的区别：**
+
+| | 脚本层 Hook | 引擎层 Hook |
+|--|------------|------------|
+| 注册位置 | `.apy` 文件顶层 | Python，`startup (before):` 阶段 |
+| 作用范围 | 指定 label 或按键 | 全局 |
+| 返回值语义 | 无 | 可返回修改后的 event（拦截型） |
+| 能否取消事件 | 不能 | 能（返回 `False`） |
+| 适用场景 | 游戏逻辑 | 插件基础设施 |
+
+拦截型 Hook 返回 `False` 时，引擎跳过该指令的默认执行，由插件完全接管：
+
+```python
+@plugin.hook("before_show")
+def on_before_show(event):
+    if event.char == "autumn" and store["special_mode"]:
+        _show_special_version(event.char, event.position)
+        return False    # 取消默认 show 执行
+    return event        # 正常执行
+```
+
+### 命名空间（Namespace）
+
+插件私有状态存入独立命名空间，不污染 `store`：
+
+```python
+plugin.declare_namespace(state={"models": {}, "active": False}, version=1)
+
+# 访问
+plugin.ns.models["autumn"] = model_obj
+plugin.ns.active = True
+```
+
+命名空间状态在 `saveable=True`（默认）时独立存入存档的独立 slot，读档后自动恢复。版本迁移与 `Saveable` 接口统一：
+
+```python
+plugin.declare_namespace(
+    state    = {"models": {}, "version_field": 0},
+    version  = 2,
+    saveable = True,
+    migrate  = lambda data, from_ver: _migrate(data, from_ver)
+)
+```
+
+**命名空间进入 `.apy` 顶层 exec 上下文**，开发者可以直接引用：
+
+```apy
+$ live2d.models["autumn"].play("idle")
+$ live2d.active = True
+```
+
+但命名空间名在 Parser 第一遍扫描时必须已知（通过 `declare_namespace` 静态声明），否则 Parser 无法区分 `live2d.models` 是命名空间访问还是 store 变量的属性访问。
+
+**保留命名空间名：**
+
+```python
+RESERVED_NAMESPACES = {
+    "engine",       # 引擎本体 API
+    "axn",          # 官方扩展
+    "store",        # 游戏状态
+    "persistent",   # 跨存档数据
+    "preferences",  # 玩家偏好
+    "narrator",     # 保留关键字
+}
+```
+
+注册与保留名冲突时启动报 `AxnPluginError`。
+
+**显式声明 `.apy` 命名空间**（不依赖插件机制时）：
+
+```apy
+# options_window.apy 或任意顶层 .apy 文件
+declare namespace mymod
+declare namespace dlc_extra
+```
+
+```python
+# startup (before): 块里动态注册
+engine.namespace.register("mymod", state={...}, version=1)
+```
+
+`declare namespace` 告诉 Parser 这个名字是命名空间，动态注册提供实际状态和行为。声明但没注册时引擎启动警告，注册但没声明时同样警告并建议补上声明。
+
+### `project.toml` 插件配置
+
+```toml
+[plugins]
+mode = "all"            # all（默认）/ whitelist / blacklist
+
+whitelist = [           # mode=whitelist 时生效，支持版本约束
+    "live2d>=1.2.0",
+    "lipsync",
+]
+
+disabled = [            # mode=blacklist 时生效
+    "map",
+    "clue_board",
+]
+
+load_order = [          # 显式控制加载顺序（不等于 whitelist，其余插件仍然加载）
+    "base_utils",
+    "live2d",
+    "lipsync",
+]
+```
+
+`mode` 字段明确意图，`whitelist` 和 `blacklist` 不同时生效，避免语义歧义。
+
+**加载顺序规则（优先级从高到低）：**
+
+1. `project.toml` 的 `load_order` 显式声明
+2. 依赖关系拓扑排序（`depends=["live2d"]` 声明的依赖先加载）
+3. 文件名字典序（兜底，保证确定性）
+
+**插件依赖声明：**
+
+```python
+plugin = Plugin("lipsync", version="0.8.1", depends=["live2d"])
+```
+
+`live2d` 未加载时 `lipsync` 也不加载，引擎启动报错：
+
+```
+AxnPluginError: 'lipsync' requires 'live2d' but it is not loaded.
+  Check your project.toml plugin configuration.
+```
+
+**版本约束不满足时：**
+
+```
+AxnPluginError: 'lipsync' requires 'live2d>=1.2.0', but loaded version is '1.0.3'.
+  Update 'live2d' or relax the version constraint in 'lipsync'.
+```
+
+**冲突处理原则**：两个插件注册同名动词、同名子命令或同名参数扩展时，引擎启动报 `AxnPluginError`，不静默覆盖，不猜测优先级。开发者必须在 `project.toml` 里禁用其中一个。
+
+### 引擎自动发现机制
+
+`main/axn/` 目录下所有包含 `Plugin()` 声明的 `.py` 文件自动被引擎发现：
+
+```
+main/axn/
+    live2d.py         ← 有 Plugin() 声明，自动加载
+    lipsync.py        ← 有 Plugin() 声明，自动加载
+    utils.py          ← 无 Plugin() 声明，跳过（工具脚本）
+    data.json         ← 非 .py 文件，跳过
+```
+
+无 `Plugin()` 声明的文件静默跳过，不报错，但 `axn doctor` 列出来让开发者确认是否是遗漏。
+
+### 时序说明
+
+插件加载时序与引擎启动阶段的关系：
+
+```
+Parser 三遍扫描（读取 declare_* 声明，建立符号表）
+  ↓
+扫描 main/axn/ 目录，发现所有有 Plugin() 声明的文件
+  ↓
+按 project.toml 配置过滤 + 依赖拓扑排序
+  ↓
+按顺序 import 每个插件模块（执行文件顶层的 declare_* 调用）
+  ↓
+startup (before) 阶段（引擎调用每个插件的装饰器绑定，完成动态注册）
+  ↓
+startup 阶段
+  ↓
+startup (after) 阶段
+  ↓
+start label
+```
+
+**静态声明（`declare_*`）决定 Parser 行为，动态注册（装饰器绑定）决定运行时行为，两者必须一致。** 动态注册的 verb/subcommand 如果没有对应的静态 `declare_*`，Parser 会把它当未知指令处理，报 `AxnParseError`。
+
+### `axn doctor` 插件状态输出
+
+```
+插件状态（main/axn/）：
+  [✓] live2d       1.2.0   已加载
+  [✓] lipsync      0.8.1   已加载（依赖 live2d ✓）
+  [✗] map                  已存在但在 disabled 列表中
+  [⚠] old_effect           无 Plugin() 声明，跳过（是否为遗留文件？）
+  [✗] spine                lipsync 声明依赖此插件但文件不存在
+
+  扩展冲突：无
+  命名空间冲突：无
+```
+
+### Round-Trip Fidelity（插件）
+
+| 插件扩展 | GUI 处理方式 |
+|---------|-------------|
+| `declare_verb` 注册的新指令 | 若插件提供 `gui_schema`，渲染为专用积木块；否则降级为代码节点，归属关系保留 |
+| `declare_subcommand` 注册的子命令 | 同上 |
+| `declare_extend` 注册的新参数 | 在原指令积木块上显示额外参数字段，标注来源插件名 |
+| `declare_namespace` 命名空间 | 变量面板独立分组，标注"插件命名空间：{plugin_name}" |
+| `declare_hook` | 编辑器插件面板列出已注册 Hook，标注触发时机 |
+
+---
+
+## `engine.*` Python API
+
+### 设计定位
+
+`engine.*` 是 Axn-Plus 的运行时 Python API，等价于 Ren'Py 的 `renpy.*`，但遵守更严格的设计原则：
+
+**允许**：查询任何引擎状态（只读）；触发经过设计的有限写操作。
+
+**禁止**：直接修改引擎内部数据结构；绕过脚本层的状态机（存档、回滚、round-trip 必须保持一致）。
+
+所有写操作必须走和脚本层相同的指令路径。`engine.script.call("morning_scene")` 内部执行的代码路径与 `.apy` 里的 `call morning_scene` 完全相同，不是特殊的快捷通道。
+
+### 分层 API 结构
+
+```
+engine.script.*      执行流控制
+engine.display.*     显示状态查询
+engine.audio.*       音频状态查询与控制
+engine.save.*        存档操作
+engine.ui.*          UI 状态
+engine.input.*       输入控制
+engine.hook.*        引擎层 Hook 注册（插件使用）
+engine.plugin.*      插件注册接口（插件使用）
+engine.namespace.*   命名空间管理
+engine.config        运行时只读配置
+```
+
+### `engine.script.*`
+
+```python
+engine.script.call("morning_scene")
+engine.script.call("morning_scene", mood="happy", day=3)
+engine.script.jump("route_a")
+engine.script.current_label()         # 返回当前 label 名（str）
+engine.script.call_stack()            # 返回完整调用栈 list[CallFrame]
+engine.script.is_in_label("morning_scene")   # bool
+```
+
+`call` 和 `jump` 在 Python 块里调用时，行为与 `.apy` 里的 `call`/`jump` 完全一致，包括存档位置记录和回滚处理。
+
+### `engine.display.*`
+
+```python
+engine.display.is_visible("autumn")                # bool
+engine.display.get_position("autumn")              # (x, y) 归一化坐标
+engine.display.get_expression("autumn")            # 当前表情状态名（str）
+engine.display.get_layer_state("autumn", "face")   # layers 模型下指定层的状态
+engine.display.current_scene()                     # 当前背景路径（str | None）
+engine.display.visible_chars()                     # 当前可见角色名列表
+```
+
+### `engine.audio.*`
+
+```python
+engine.audio.is_playing(channel="music")           # bool
+engine.audio.current_file(channel="music")         # str | None
+engine.audio.notify("解锁了新 CG", icon="...", duration=3.0)   # 等价于 notify 指令
+```
+
+### `engine.save.*`
+
+```python
+engine.save.slots()                    # list[SlotMetadata]
+engine.save.slot_info(slot)            # SlotMetadata | None
+engine.save.exists(slot)               # bool
+engine.save.delete(slot)               # 删除存档槽
+engine.save.copy(from_slot, to_slot)   # 复制存档槽
+engine.save.save(slot)                 # 触发存档（等价于 checkpoint，但走手动存档路径）
+engine.save.load(slot)                 # 触发读档
+```
+
+`engine.save.save()` 和 `engine.save.load()` 是 Ren'Py 的 `Save()` / `Load()` 的等价物，专门用于 `gui` / `screen` 块内的存档界面按钮 `on_click` 处理器，不需要引入独立的 `.apy` 存档指令。
+
+### `engine.input.*`
+
+```python
+engine.input.disable(skip=True, rollback=True)
+engine.input.enable()
+engine.input.is_disabled()     # bool
+```
+
+---
+
+## 语言行为规范补充
+
+本章集中记录各类歧义场景的明确行为规范，作为实现时的参考。
+
+### `menu timeout` + 回滚
+
+超时自动选择**不产生回滚检查点**，回滚直接穿越到 `menu` 之前，计时器重置：
+
+| 触发方式 | 产生回滚检查点 |
+|---------|--------------|
+| 玩家主动选择 | ✅ |
+| timeout 自动选择 | ❌ |
+
+理由：超时选择是引擎替玩家做的决定，玩家有权重做。
+
+### `animation yield` 命名
+
+`yield` 支持命名，`resume` 接受 yield 名：
+
+```apy
+animation boss_enter:
+    show boss center (transform=slam_down)
+    wait for all
+    yield "landed"
+    camera shake 10 0.5
+    yield "roared"
+    play sound "sfx/roar.ogg"
+
+call animation boss_enter (handle=anim)
+autumn: "它来了！"
+resume animation anim "landed"    # 恢复到 "landed" yield 点
+sophia: "快跑！"
+resume animation anim "roared"    # 恢复到 "roared" yield 点
+```
+
+`AnimationHandle` 增加 `current_yield: str | None` 属性，供调用方查询当前卡在哪个 yield 点。不带名字的 `resume animation anim` 恢复到最近的 yield 点（向后兼容）。多个 yield 点时，引擎按顺序排队，`resume` 总是恢复到下一个未 resume 的 yield 点。
+
+### `with char` 块内的 `call` / `jump`
+
+`with char` 是**编译期展开**，不维护运行时上下文栈。展开规则：
+
+- `call` 后面的行已在编译期带上 with 块的修饰符，回来后修饰符自然存在
+- `jump` 出去后 with 块的后续行不存在，上下文随之消失，块内其余行不执行
+
+这是最简单、最可预测的实现，开发者可以把 `with char` 当成批量添加修饰符的语法糖，不依赖任何运行时上下文维护。
+
+### `for` 循环迭代对象快照
+
+引擎在 `for` 开始时对迭代对象做快照（内部等价于 `tuple(iterable)`），与 Python 原生行为不同，但对视觉小说场景更安全，避免边迭代边修改的未定义行为。
+
+`axn lint` 增加检查：for 循环内修改了与迭代对象同名变量时警告：
+
+```
+AxnWarning: [lint] Modifying 'inventory' inside 'for item in inventory' loop.
+  The engine snapshots the iterable at loop start; modifications won't affect iteration.
+  → scene.apy, line 42
+```
+
+### `default_expression` 生命周期
+
+只在引擎启动时设置角色的**初始**表情状态，之后不再自动生效。
+
+新增 `expression autumn default` 语法，显式重置到声明的默认表情：
+
+```apy
+expression autumn default                         # 重置到 default_expression
+expression autumn default (transition=dissolve)   # 带过渡
+```
+
+### `on enter` 触发规则
+
+**每次执行流到达 label 第一行之前触发**，无论是 `call` 还是 `jump`，也无论是否是第一次到达。label 内部 `jump` 到自身形成循环时，每次经过入口都触发。
+
+如果只想触发一次，用 `once` 块包裹：
+
+```apy
+on enter morning_scene:
+    once per_playthrough:
+        play music "bgm/morning.ogg"
+```
+
+`restore=` 参数控制读档后的触发行为（见存档章节）。
+
+### `triggers` 可见性精确定义
+
+三条规则：
+
+1. `show` 后且未 `hide` 的实例算可见，无论当前 alpha 是多少（transform 过渡期间也算）
+2. `alias=` 的多实例各自独立判断，triggers 跟具体实例走，不跟角色定义走
+3. `alias=` 实例被 `hide` 后，triggers 监听暂停，触发状态**保留**（不清除）；下次 `show` 后从保留状态继续判断，不重置
+
+### Auto 模式下 `<w>` 等待时间
+
+| 情况 | 等待时间 |
+|------|---------|
+| 有语音，语音未播完 | 等语音播完 + `auto_delay` |
+| 有语音，语音已播完 | `auto_forward_time` |
+| 无语音 | `auto_forward_time` |
+
+### `nvl:` 块内的 `with char`
+
+两者可以嵌套，行为叠加：`nvl:` 控制渲染路径（累积显示），`with char` 控制角色和修饰符上下文，互不干扰：
+
+```apy
+nvl:
+    with autumn (happy):
+        "第一句，累积显示。"
+        "第二句，同样累积。" (sad)   # sad 覆盖 happy
+    sophia: "第三句，sophia 说的。"
+nvl clear
+```
+
+### `snapshot` 生命周期
+
+快照生命周期跟**创建它的 label** 走，不跟父 label 走。父 label 退出只清除自己创建的 snapshot，子 label 的 snapshot 在子 label 退出时清除。
+
+跨 label 持久化用 `persist snapshot "name"` 显式声明：
+
+```apy
+snapshot "before_choice"
+persist snapshot "before_choice"    # 不随 label 退出清除
+```
+
+### `unless` + `else`
+
+`unless ... else:` 合法，等价于 `if not ... else:`：
+
+```apy
+unless flag_met_autumn:
+    jump prologue
+else:
+    autumn: "好久不见。"
+```
+
+`unless ... elif ...` 仍然不合法，避免语义混乱。
+
+### `label` 参数与存档
+
+`*args` / `**kwargs` 不从语言层面限制，但序列化时对不可序列化的值丢弃并警告。
+
+`axn lint` 对"含 checkpoint 的 label 使用了 `*args` 或 `**kwargs`"输出警告，建议改为具名参数：
+
+```
+AxnWarning: [lint] 'label battle_scene(*args)' contains a checkpoint.
+  '*args' may not be fully serializable; prefer named parameters.
+  → scene.apy, line 8
+```
+
+### `condition` 表达式求值时机
+
+`return if flag_done` 等条件短路写法的条件表达式，在执行到该行时立即求值，与 Python 求值语义完全一致。
+
+### `persistent` 并发写入
+
+采用**读-改-写 + 文件锁**模式处理多实例并发：
+
+- Windows：`msvcrt.locking`
+- Unix：`fcntl.flock`
+
+合并策略：成就解锁、已读记录等"只增不减"的字段取并集，不会丢数据；`preferences` 等字段 last-write-wins，这是可接受的行为。
+
+### `with store` 原子性边界
+
+明确区分两种原子性：
+
+- **异常原子性**（`with store` 保证）：Python 异常发生时自动回滚，引擎继续运行
+- **持久化原子性**（不保证）：进程崩溃时 store 尚未写入磁盘，无法保证
+
+对关键状态的建议安全模式：
+
+```apy
+with store:
+    flag_a = True
+    flag_b = True
+checkpoint "after_critical_update"
+# with store 完成后立即 checkpoint，让崩溃恢复有一个干净的重入点
+```
+
+### `checkpoint` 在 call 深处的副作用陷阱
+
+读档后只从 checkpoint 下一条指令继续，调用链中更早的代码不重新执行。需要在读档后重建的状态，应放在 `on after_load (restore=always):` 钩子里处理，不要依赖调用链重跑。
+
+```apy
+on after_load (restore=always):
+    # 重建必要的显示状态和副作用
+    $ expensive_setup()
+```
+
+`axn lint` 增加检查：含 `checkpoint` 的 label 如果在调用链上游有副作用性函数调用（检测 `$` 行里的函数调用），输出提示。
+
+---
+
+## 存档系统补充
+
+### 存档槽元数据扩展
+
+`SlotMetadata` 增加两个字段：
+
+```python
+@dataclass
+class SlotMetadata:
+    slot:           str
+    kind:           Literal["manual", "auto", "quick"]
+    timestamp:      float
+    label:          str
+    pc:             int
+    chapter:        str | None
+    thumbnail:      str | None
+    playtime:       float
+    version:        str
+    last_dialogue:  str | None    # 存档时最后一条对话，截断到 80 字符，自动从 history buffer 取
+    player_note:    str | None    # 玩家手写描述，存档 UI 提供可选编辑入口
+```
+
+`last_dialogue` 零额外逻辑，直接读 history buffer 最后一条的 `text` 字段，截断加省略号。存档 UI 里可选显示。
+
+### 全局回滚开关
+
+```apy
+# options_window.apy
+engine:
+    rollback:
+        enabled = true    # false = 全局禁用，等价于所有 label 都是 rollback=none
+```
+
+实现层面：VM 启动时检查此 flag，若为 false，`WAIT_CLICK` 指令不产生回滚检查点。适用于 18+ 内容合规需求或开发者明确不需要回滚的项目。
+
+---
+
+## UI 系统补充
+
+### screen / gui 生命周期钩子
+
+`screen` 和 `gui` 支持 `on_show` / `on_hide`：
+
+```apy
+screen inventory:
+    on_show:
+        $ store["inv_sort"]   = "default"
+        $ store["inv_scroll"] = 0
+    on_hide:
+        $ store["inv_last_selected"] = None
+    ...
+
+gui affection_bar(char):
+    state display_value = 0
+    on_show:
+        display_value = store["relationship"][char]   # 从 store 动态计算 state 初始值
+    on_hide:
+        pass
+    ...
+```
+
+`on_show` 在控件第一次渲染前执行，`on_hide` 在控件从显示层移除后执行。
+
+### 动态列表 diffing 策略
+
+明确采用 **key-based diffing**：
+
+| 情况 | 行为 |
+|------|------|
+| key 相同，属性变化 | 原地更新，`state` 保留 |
+| key 新增 | 创建新实例，`state` 用声明默认值 |
+| key 消失 | 销毁实例，`state` 丢弃 |
+| 无 key 的静态列表 | 按声明顺序位置 diff，行为确定 |
+| 无 key 的动态列表 | debug 模式警告，按位置 diff（可能错位）|
+
+### Qt 后端 `call window`
+
+Qt 后端缺少 `call screen` 的等价物，引入 `call window`：
+
+```apy
+call window "ui/chapter_select.apy::ChapterSelect" as result
+```
+
+实现：游戏线程通过 QtBridge 发送"显示并阻塞等待"信号，Qt 主线程显示 window，用户操作触发 `Return()` 后发回结果信号，游戏线程继续。语义与 `modal show` 完全一致，适用于需要阻塞等待用户选择但不需要 modal 焦点接管语义的全屏界面。
+
+### `focus_group` 跨 screen 焦点管理
+
+`call screen` 打开时，引擎自动冻结所有其他显示中 screen 的 `focus_group`（不响应键盘/手柄焦点请求），关闭后自动恢复。此机制在引擎层透明处理，开发者无需手动管理。
+
+`show screen`（非阻塞）打开时不自动冻结，开发者通过 `focus_lock` 显式指定：
+
+```apy
+show screen notification_banner
+focus_lock pause_menu    # 焦点锁定在 pause_menu，banner 不参与焦点循环
+```
+
+### `tooltip` 触摸设备行为
+
+```apy
+# options_window.apy
+engine:
+    tooltip:
+        touch_trigger  = "long_press"    # long_press / tap / disabled
+        touch_duration = 0.5             # 长按触发阈值（秒）
+        touch_dismiss  = "tap_outside"   # 关闭方式
+```
+
+触摸设备上改为长按触发，长按后显示，点击其他位置关闭。`disabled` 时触摸设备不显示 tooltip。
+
+### `wait click` 指令
+
+专用于"等待一次用户点击"的非对话场景，不触发 interactive track 限制，可与 `parallel (wait=any)` 共存：
+
+```apy
+parallel (wait=any):
+    track skip_gate:
+        wait click          # 等点击，不是对话行，不触发 interactive track 限制
+    track cutscene:
+        play video "opening.mp4"
+        wait for video
+```
+
+`wait click` 收到点击后触发 `wait=any` 的完成条件，同时发送 `cancel` 信号给其他 track。这是"点击跳过演出"高频场景的标准写法。
+
+---
+
+## 平台适配补充
+
+### `engine.variant("small")` 分屏场景
+
+`variant("small")` 判断基于**游戏窗口宽度**（通过 `SDL_GetWindowSize()` 获取），不是物理屏幕分辨率。Android 分屏时窗口缩小，`variant("small")` 自动变为 true，UI 自动适配。文档明确此行为，开发者无需手动处理分屏。
+
+### Android 软键盘布局重计算性能
+
+`keyboard_resize_mode = "resize"` 改为**延迟一帧重算**，不在 `resizeEvent` 回调里同步触发，避免低端 Android 机卡顿。
+
+`options_window.apy` 注释里明确写出各模式的性能差异，建议低端 Android 项目默认使用 `"pan"` 模式。
+
+---
+
+## 工具链补充
+
+### `axn fmt` — 代码格式化
+
+基于 AST 重新生成代码，保证 round-trip 稳定。项目级配置：
+
+```json
+// project.toml
+[fmt]
+indent          = 4
+narrator_style  = "@"         # @ 或 narrator:，统一风格
+bracket_spaces  = false
+trailing_newline = true
+```
+
+```
+axn fmt                        # 格式化整个项目
+axn fmt scripts/scene.apy      # 格式化单文件
+axn fmt --check                # 只检查不修改，CI 用，退出码非零表示格式不符
+```
+
+### `axn build` 增量构建
+
+基于 mtime + hash 的三层增量策略：
+
+```
+资源文件：只重新打包变更的文件
+.apy 字节码：只重新编译变更文件（复用现有 AST 缓存机制）
+最终包：delta patch，只替换变更部分
+```
+
+```
+axn build --incremental    # 显式开启，首次全量，后续增量
+```
+
+缓存存 `.cache/build/`，构建日志显示哪些文件被跳过。
+
+### VSCode Debugger 集成（DAP）
+
+实现 DAP（Debug Adapter Protocol）适配器，开发模式下引擎内置 DAP server：
+
+```
+.apy 层调试（引擎自己的 DAP）：
+  断点对应 .apy 源文件行号
+  变量面板显示 store / persistent 内容
+  调用栈显示 label call 栈
+  Step over = 推进到下一条引擎指令的 WAIT_CLICK
+  Step into  = 进入 call 的子 label
+
+python: 块调试（debugpy）：
+  进入 python: 块时无缝切换到 debugpy
+  出块后切回引擎 DAP
+```
+
+发布包中完全剥离。此功能作为引擎 1.0 之后的独立里程碑。
+
+### `axn extract-strings` 重复字符串策略
+
+采用**每处一条**策略，不合并。同一句话在不同上下文可能需要不同翻译（比如"确认"在道具拾取和删除存档时语气不同）；合并后更新其中一处时其他处状态不明确。
+
+用翻译记忆（`--memory`）减少重复工作，不在提取阶段合并：
+
+```
+axn extract-strings --lang en --memory strings/memory.json
+# 对相似度 >= 0.85 的条目自动填充记忆库中的历史翻译，标注置信度
+```
+
+### `expoint` 三级加载顺序
+
+同一 `expoint` 被多个文件定义时，执行顺序按以下三级优先级决定：
+
+```
+1. options_window.apy 显式声明（最高优先级）
+   engine:
+       expoints:
+           after_prologue:
+               order: ["dlc/base.apy", "dlc/chapter3.apy"]
+
+2. 脚本中 expoint = "name" 的声明顺序
+   以 Parser 第一遍扫描遇到 expoint = "name" 的顺序为准
+   扫描起点为 flow.apy，按 include 链深度优先展开
+   无 include 关系的文件按文件名字典序补充
+
+3. 文件名字典序（兜底，保证确定性）
+```
+
+`axn doctor` 对有多个定义但没有显式 order 声明的 expoint 输出建议：
+
+```
+AxnWarning: [doctor] 'expoint after_prologue' has 3 definitions.
+  Execution order (by declaration):
+    1. dlc/base.apy, line 12      ← expoint = "after_prologue" 声明处
+    2. dlc/chapter3.apy, line 5
+    3. dlc/extra.apy, line 8
+  To make this explicit, add to options_window.apy:
+    engine: expoints: after_prologue: order: [...]
+```
+
+### `axn lint` 新增检查项
+
+在现有基础上追加：
+
+- `with char` 块内含 `call`/`jump` 时，提示"编译期展开，jump 出去后块内后续行不执行"
+- `for` 循环内修改了迭代对象同名变量
+- 含 `checkpoint` 的 label 在调用链上游有副作用性函数调用
+- `label` 使用 `*args`/`**kwargs` 且含 `checkpoint`
+- 插件声明了但没有注册，或注册了但没有声明
+- `declare namespace` 声明了但 `engine.namespace.register()` 没有对应注册
+
+### Round-Trip Fidelity 补充（工具链与平台）
+
+| 新增内容 | GUI 处理方式 |
+|---------|-------------|
+| `wait click` 指令 | 脚本区独立积木块，标注"等待用户点击，不产生对话等待点" |
+| `parallel (wait=any)` + `wait click` | parallel 节点显示 wait=any 标记；skip_gate track 以特殊样式区分 |
+| screen `on_show` / `on_hide` | screen 节点内的生命周期钩子面板，与 `state` 面板并列 |
+| gui `on_show` / `on_hide` | 控件节点内的生命周期钩子面板 |
+| `focus_lock` 指令 | 脚本区焦点锁定节点，目标 screen 名字段可编辑 |
+| `call window` (Qt 后端) | 脚本区阻塞窗口节点，标注"Qt 后端专用，等价于 call screen" |
+| 全局回滚开关 | options_window.apy 配置面板，bool 开关，标注"影响整个项目" |
+| 插件扩展的新动词 | 若有 gui_schema 则渲染专用积木块；否则代码节点，标注插件来源 |
+| 插件扩展的新参数 | 原指令积木块上的额外参数字段，以插件名标注来源 |
+| 插件扩展的新子命令 | 与内置子命令同等处理，标注插件来源 |
+| 命名空间变量访问 | 变量面板独立分组，标注"插件命名空间" |
+| `engine.*` API 调用 | 脚本区代码节点；变量面板标注"引擎 API，只读查询 + 有限写操作" |
+| `axn fmt` 格式化 | 编辑器菜单集成，Format Document 快捷键；格式化后自动 round-trip 验证 |
+
+---
+
 ## 不是什么
 
 - 不是 Ren'Py 的分支或 fork
