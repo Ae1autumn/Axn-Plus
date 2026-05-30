@@ -11901,6 +11901,93 @@ def _reload_all_models(data): ...
 
 **三种扩展层级不可混用**：给 `camera` 注册新子命令用 `declare_subcommand`；给 `show` 增加新具名参数用 `declare_extend`；完全不相关的新功能用 `declare_verb`。混用时引擎启动报 `AxnPluginError`。
 
+### Hook 优先级与组合语义
+
+Hook 是**有序管道**，不是简单的事件通知。同一 hook 点上注册了多个处理函数时，按优先级从小到大依次串联执行：
+
+```python
+plugin.declare_hook("before_show", priority=10)   # 数字越小越先执行，默认 50
+```
+
+**管道规则：**
+
+- 每个处理函数接收上一个处理函数返回的 event 对象
+- 返回修改后的 event：继续传递给下一个处理函数
+- 返回 `False`：中断管道，后续处理函数不再执行，引擎跳过该指令的默认执行
+- 返回原始 event 不修改：透传，适合只观察不干预的场景
+
+```python
+@plugin.hook("before_show", priority=10)
+def on_before_show(event):
+    if event.char == "autumn" and store["special_mode"]:
+        _show_special_version(event.char, event.position)
+        return False    # 取消默认 show，后续 hook 不再执行
+    return event        # 正常传递
+
+@plugin.hook("before_show", priority=20)
+def another_before_show(event):
+    # priority=10 的 hook 返回 False 时，此函数不会被调用
+    log_show_event(event)
+    return event
+```
+
+优先级冲突（两个插件声明相同 priority）时，引擎启动输出警告，按文件名字典序决定顺序：
+
+```
+AxnWarning: [plugin] Hook 'before_show' priority conflict: 'live2d' and 'lipsync' both use priority=10.
+  Falling back to filename order: live2d.py before lipsync.py.
+  Set different priorities to make order explicit.
+```
+
+---
+
+### 参数感知 Hook（`declare_extend` 与 Hook 的合并形式）
+
+`declare_extend` 给现有指令追加具名参数，配合参数感知 hook 使两者合二为一——只有当指令真的带了声明的参数时才触发：
+
+```python
+@plugin.extend("show", params={"l2d_motion": str, "l2d_blend": float})
+def on_show_with_l2d(event):
+    # 只在 show 指令带了 l2d_motion 参数时触发
+    # 参数直接作为 event 属性访问，不需要 event.params.get(...)
+    _set_motion(event.char, event.l2d_motion)
+    return event
+```
+
+未带声明参数的 `show` 指令不触发此 hook，不产生额外开销。
+
+---
+
+### 插件间通信约定
+
+`depends=["live2d"]` 保证加载顺序，通过 `get_plugin()` 获取依赖插件对象：
+
+```python
+# main/axn/lipsync.py
+from axn_plus.plugin import Plugin, get_plugin
+
+plugin = Plugin("lipsync", version="0.8.1", depends=["live2d"])
+
+@plugin.on_load
+def setup():
+    live2d = get_plugin("live2d")    # 引擎保证 depends 里的插件已加载
+    live2d.register_callback("model_loaded", on_model_loaded)
+
+def on_model_loaded(char, model):
+    _init_lipsync(char, model)
+```
+
+`get_plugin()` 返回目标插件的 `Plugin` 对象，暴露该插件通过 `plugin.register_callback()` 等方式主动开放的接口。直接访问目标插件的内部函数不被约定禁止，但属于开发者自己负责的范畴。
+
+依赖插件未加载时 `get_plugin()` 抛出 `AxnPluginError`：
+
+```
+AxnPluginError: Plugin 'lipsync' requires 'live2d' but it is not loaded.
+  Add 'live2d.py' to main/axn/ or declare it in project.toml.
+```
+
+---
+
 ### 引擎层 Hook 点完整列表
 
 ```python
@@ -11967,7 +12054,19 @@ plugin.declare_namespace(
 )
 ```
 
-**命名空间进入 `.apy` 顶层 exec 上下文**，开发者可以直接引用：
+**命名空间作用域隔离：**
+
+命名空间分两类，通过 `public` 参数区分：
+
+```python
+plugin.declare_namespace("live2d", public=True)    # 进入 exec 上下文，开发者可读写
+plugin.declare_namespace("_live2d_internal",       # 不进入 exec 上下文，插件私有
+                         public=False)
+```
+
+`public=True`（默认）的命名空间进入 `.apy` 的 exec 上下文，开发者可以在脚本里直接访问。`public=False` 的命名空间完全私有，外部代码无法通过 `.apy` 脚本读写，只有插件自身的 Python 代码可以访问。复杂插件应将内部状态放在 `public=False` 的命名空间里，防止外部代码意外污染。
+
+**命名空间进入 `.apy` 顶层 exec 上下文**，开发者可以直接引用（仅 `public=True`）：
 
 ```apy
 $ live2d.models["autumn"].play("idle")
@@ -12005,6 +12104,243 @@ engine.namespace.register("mymod", state={...}, version=1)
 ```
 
 `declare namespace` 告诉 Parser 这个名字是命名空间，动态注册提供实际状态和行为。声明但没注册时引擎启动警告，注册但没声明时同样警告并建议补上声明。
+
+### `gui_schema` 字段类型系统
+
+`gui_schema` 的职责边界：**编辑器只负责结构，不负责语义**。它告诉编辑器这个指令叫什么、接受哪些参数、渲染什么控件，以及如何把 `.apy` 代码反向解析回积木块。业务逻辑完全在插件的 Python 实现里，编辑器不参与。
+
+字段类型分三层：
+
+**第一层：基础类型**
+
+| 类型 | 控件 |
+|------|------|
+| `string` | 文本输入框 |
+| `int` | 整数输入框 |
+| `float` | 浮点数输入框（支持 `min` / `max` / `step` 元数据） |
+| `bool` | 开关 |
+
+**第二层：引擎语义类型**
+
+编辑器从符号表或资源系统自动补全，是纯 `string` 做不到的：
+
+| 类型 | 补全来源 |
+|------|---------|
+| `char_ref` | `define char` 符号表 |
+| `label_ref` | 全局 label 符号表，支持跨文件 |
+| `animation_ref` | `animation` 块名符号表 |
+| `asset_path` | 文件选择器，支持 `filter` 元数据指定扩展名 |
+| `expression_name` | 依赖 `char_ref` 字段动态联动，选定角色后拉对应表情列表 |
+| `position_kw` | 内置位置关键字 + `define position` 具名位置 |
+| `layer_name` | 已知层列表 |
+| `channel_name` | 音频通道名 |
+| `transition_name` | 内置过渡 + 已注册自定义过渡 |
+| `achievement_ref` | `define achievement` 符号表 |
+| `store_key` | `flag` 声明的变量列表 |
+
+`expression_name` 需要声明依赖字段：
+
+```python
+{"name": "expression", "type": "expression_name", "depends_on": "char"}
+```
+
+**第三层：复合类型**
+
+| 类型 | 说明 |
+|------|------|
+| `enum` | 固定选项列表，schema 里内联声明 `options` |
+| `flag_list` | 多选 flag，如 `input disable (skip, rollback)` |
+| `color` | 颜色选择器，`#rrggbb` 或 `#rrggbbaa` |
+| `duration` | `float` 的语义别名，编辑器显示单位"秒" |
+| `tuple2` | `(x, y)` 坐标或尺寸 |
+
+`enum` 示例：
+
+```python
+{"name": "blend_mode", "type": "enum", "options": ["additive", "normal", "multiply"]}
+```
+
+`asset_path` 扩展名过滤示例：
+
+```python
+{"name": "sound_file", "type": "asset_path", "filter": ["ogg", "mp3", "wav"]}
+```
+
+文件合法性验证是插件运行时的责任，编辑器只负责让用户选文件。
+
+**不内置的类型：**
+
+- `code_block`：参数值需要任意 Python 表达式时，整个积木块应降级为代码节点
+- `store_value`：让编辑器理解 store 变量的值类型成本过高，用 `string` 替代
+- 嵌套类型（如 `list[char_ref]`）：`flag_list` + `enum` 组合覆盖，专门渲染嵌套类型成本不值得
+
+---
+
+### 插件文件完整约定
+
+插件是 `/main/axn/` 目录下的**单个 `.py` 文件**。引擎启动时扫描该目录，通过静态检查 `__axn_plugin__` 标记判断是否为合法插件，不需要完整 import 文件。
+
+**必填顶层变量：**
+
+```python
+__axn_plugin__   = True       # 引擎快速识别标记，用 ast.parse 静态检查，无需 import
+__version__      = "1.0.0"
+__description__  = "插件的简短描述"
+```
+
+**可选顶层变量：**
+
+```python
+__author__       = "作者名"
+__pip_requires__ = ["httpx>=0.27.0"]   # axn doctor 检查，引擎不自动安装
+```
+
+**文件结构约定：**
+
+```python
+# main/axn/my_plugin.py
+
+__axn_plugin__   = True
+__version__      = "1.0.0"
+__description__  = "插件的简短描述"
+__author__       = "作者名"
+__pip_requires__ = ["some-lib>=1.0.0"]  # 可选
+
+from axn_plus.plugin import Plugin, get_plugin
+
+plugin = Plugin(
+    "my_plugin",
+    version = __version__,
+    depends = ["other_plugin"],    # 可选，声明的依赖保证先于本插件加载
+)
+
+# ── 静态声明（必须紧跟 Plugin() 之后，任何装饰器之前）──────────
+
+plugin.declare_verb(
+    "my_verb",
+    positional = ["char"],
+    named      = {"speed": float},
+    gui_schema = {
+        "label": "我的指令",
+        "fields": [
+            {"name": "char",  "type": "char_ref"},
+            {"name": "speed", "type": "float", "default": 1.0},
+        ]
+    }
+)
+
+# ── 生命周期 ───────────────────────────────────────────────────
+
+@plugin.on_load
+def setup():
+    # 插件被加载时执行一次
+    # 适合：初始化外部库、建立连接、注册资源
+    other = get_plugin("other_plugin")   # 保证 depends 里的插件已加载
+
+@plugin.on_unload
+def teardown():
+    # 热重载时旧版本卸载，或引擎关闭时执行
+    # 适合：释放资源、关闭连接
+    pass
+
+# ── 实现（装饰器绑定）─────────────────────────────────────────
+
+@plugin.verb("my_verb")
+def handle_my_verb(verb, args, named, store):
+    # 固定签名，不允许其他形式
+    # 抛出 AxnRuntimeError → 走引擎标准错误流程
+    # 抛出其他异常 → 自动包装为 AxnPluginError，附插件名和版本信息
+    char  = args[0]
+    speed = named.get("speed", 1.0)
+    _do_something(char, speed)
+
+# ── 内部函数（私有实现，命名加下划线前缀）────────────────────
+
+def _do_something(char, speed):
+    ...
+```
+
+**强制规则：**
+
+1. `__axn_plugin__`、`__version__`、`__description__` 为必填
+2. 所有 `declare_*` 调用必须在文件顶层，`Plugin()` 之后，任何 `@plugin.*` 装饰器之前
+3. `@plugin.verb` 处理函数签名固定为 `(verb, args, named, store)`
+4. 抛出 `AxnRuntimeError` 走引擎标准流程；其他异常自动包装为 `AxnPluginError`
+5. `__pip_requires__` 声明后 `axn doctor` 负责检查，引擎不自动安装
+
+无 `__axn_plugin__` 标记的 `.py` 文件静默跳过，不报错。`axn doctor` 会列出跳过的文件让开发者确认是否为遗漏。
+
+---
+
+### 插件安装模型
+
+插件有两种安装方式，互补覆盖不同场景：
+
+**手动安装**
+
+直接将 `.py` 文件放入 `/main/axn/` 目录，引擎启动时自动扫描发现。适合社区插件、私有插件、魔改过的插件——不需要中央仓库支持。
+
+**按需安装**
+
+在 `project.toml` 中声明需要的插件，运行 `axn plugin sync` 自动从官方仓库下载到 `/main/axn/`：
+
+```toml
+[plugins]
+dependencies = [
+    "axn-gallery==1.0.0",
+    "axn-inventory>=0.8.0",
+    "axn-live2d>=1.2.0",
+]
+```
+
+适合团队协作——新成员 clone 项目后一条命令同步环境，不依赖任何人的本地文件。
+
+**`axn doctor` 联动**
+
+`axn doctor` 发现 `project.toml` 中声明但 `/main/axn/` 里缺失的插件时：
+
+```
+[✗] 插件 'gallery' 在 project.toml 中声明但未安装
+    运行 'axn plugin sync' 下载所有缺失插件
+
+[✗] 插件 'downloader' 需要 httpx>=0.27.0，但未安装
+    运行: pip install httpx
+```
+
+`axn doctor` 只诊断不执行，不在检查阶段触发网络操作。
+
+**引擎本体不携带任何插件。** 官方维护独立的标准库仓库，所有官方插件（gallery、inventory、credits 等）均作为独立 `.py` 文件按需下载，不随引擎分发。引擎本体的职责只是扫描 `/main/axn/` 并加载其中的插件。
+
+开发者需要 httpx 等第三方库时，直接在插件文件里 `import httpx`，在项目 `requirements.txt` 里声明依赖，走标准 Python 项目工作流。引擎不包装任何网络库。
+
+---
+
+### 插件命令集
+
+```bash
+axn plugin sync              # 按 project.toml 下载所有缺失插件到 main/axn/
+axn plugin list              # 列出当前项目已安装的插件及状态
+axn plugin add gallery       # 下载 gallery 插件并添加声明到 project.toml
+axn plugin remove gallery    # 从 main/axn/ 删除并从 project.toml 移除声明
+axn plugin check             # 只检查不下载，等价于 axn doctor 的插件部分
+```
+
+`axn doctor` 内部调用 `axn plugin check` 的逻辑，不重复实现。
+
+CLI / GUI / TUI 均需展示当前项目的插件状态面板：
+
+```
+已安装插件（main/axn/）：
+  ✓ gallery      1.0.0   官方   已在 project.toml 声明
+  ✓ inventory    0.9.1   官方   已在 project.toml 声明
+  ✗ live2d       -       社区   project.toml 声明但未安装
+  ? old_effect   -       -      无 __axn_plugin__ 标记，已跳过
+
+pip 依赖缺失：
+  ✗ httpx>=0.27.0（downloader 插件需要）
+```
+
+---
 
 ### `project.toml` 插件配置
 
@@ -12636,6 +12972,34 @@ AxnWarning: [doctor] 'expoint after_prologue' has 3 definitions.
     engine: expoints: after_prologue: order: [...]
 ```
 
+### 引擎本体模块化原则
+
+引擎本体不设插件系统，只做**有限的模块化**：把可选功能拆开按需加载，但扩展点不对外开放。区别在于：插件系统允许第三方注册和替换引擎行为；模块化只是引擎自己的内部组织方式。
+
+**后端渲染层**：Pygame 和 Qt 两套后端通过 `AbstractBackend` 接口解耦，项目初始化时选定，之后固定。接口设计以稳定性为优先——接口足够干净，将来有人想实现自定义后端时不需要 fork 引擎，但当前不提供 CLI 级别的后端注册机制。
+
+**平台层**：条件导入，不默认全部加载。发布 Linux 版本时不应有任何 `tts_windows.py` 的代码在内存里：
+
+```python
+# 正确做法
+if sys.platform == "win32":
+    from axn_plus.platform.tts_windows import WindowsTTS as TTS
+```
+
+**标准库**：官方标准库插件（gallery、inventory、credits 等）均作为独立 `.py` 文件维护在独立仓库，不随引擎本体分发，不是引擎的可选依赖。开发者按需下载到 `/main/axn/`，与社区插件完全平等。
+
+**CLI 命令**：`axn build`、`axn lint`、`axn test` 等命令不插件化。需要自定义构建步骤时，在 `project.toml` 里声明钩子脚本：
+
+```toml
+[build]
+pre_script  = "scripts/pre_build.py"
+post_script = "scripts/post_build.py"
+```
+
+**Parser 不开放插件扩展**：Parser 行为必须完全可预测，Round-Trip Fidelity 依赖于此。第三方通过 `declare_verb` 扩展语法，这是上限，不允许修改 Parser 内部行为。
+
+---
+
 ### `axn lint` 新增检查项
 
 在现有基础上追加：
@@ -12646,6 +13010,9 @@ AxnWarning: [doctor] 'expoint after_prologue' has 3 definitions.
 - `label` 使用 `*args`/`**kwargs` 且含 `checkpoint`
 - 插件声明了但没有注册，或注册了但没有声明
 - `declare namespace` 声明了但 `engine.namespace.register()` 没有对应注册
+- `/main/axn/` 目录下存在无 `__axn_plugin__` 标记的 `.py` 文件（提示确认是否为遗漏）
+- `project.toml` 中声明了插件但 `/main/axn/` 里缺失（提示运行 `axn plugin sync`）
+- 插件的 `__pip_requires__` 中声明的包未安装（提示 pip install）
 
 ### Round-Trip Fidelity 补充（工具链与平台）
 
@@ -12658,12 +13025,16 @@ AxnWarning: [doctor] 'expoint after_prologue' has 3 definitions.
 | `focus_lock` 指令 | 脚本区焦点锁定节点，目标 screen 名字段可编辑 |
 | `call window` (Qt 后端) | 脚本区阻塞窗口节点，标注"Qt 后端专用，等价于 call screen" |
 | 全局回滚开关 | options_window.apy 配置面板，bool 开关，标注"影响整个项目" |
-| 插件扩展的新动词 | 若有 gui_schema 则渲染专用积木块；否则代码节点，标注插件来源 |
-| 插件扩展的新参数 | 原指令积木块上的额外参数字段，以插件名标注来源 |
+| 插件扩展的新动词 | 若有 `gui_schema` 则按字段类型系统渲染专用积木块；否则降级为代码节点，标注插件来源 |
+| 插件扩展的新参数（`declare_extend`） | 原指令积木块上显示额外参数字段，以插件名标注来源；参数感知 hook 与参数字段关联显示 |
 | 插件扩展的新子命令 | 与内置子命令同等处理，标注插件来源 |
-| 命名空间变量访问 | 变量面板独立分组，标注"插件命名空间" |
+| 命名空间变量访问（`public=True`） | 变量面板独立分组，标注"插件命名空间：{plugin_name}" |
+| 命名空间（`public=False`） | 变量面板不显示，标注"插件私有，不可从脚本访问" |
 | `engine.*` API 调用 | 脚本区代码节点；变量面板标注"引擎 API，只读查询 + 有限写操作" |
 | `axn fmt` 格式化 | 编辑器菜单集成，Format Document 快捷键；格式化后自动 round-trip 验证 |
+| 插件状态面板 | CLI/GUI/TUI 均展示：已安装插件列表、版本、来源（官方/社区）、project.toml 声明状态、pip 依赖缺失提示 |
+| `axn plugin sync` | CLI 命令，按 project.toml 下载缺失插件；GUI/TUI 中对应"同步插件"按钮 |
+| Hook 优先级冲突警告 | 编辑器插件面板标注冲突的 hook 优先级，建议修改 |
 
 ---
 
