@@ -618,6 +618,30 @@ menu as answer:
 #     → scene.apy, line 8
 # GUI 处理：menu as 对应独立的"菜单返回值"节点，与跳转型菜单节点分开
 
+# menu (async)：非阻塞菜单，显示后执行流立即继续，用 wait for 等待选择结果
+# 默认行为：menu 阻塞执行流，等玩家选择后才推进
+# (async) 参数：menu 显示但不阻塞，对话在 menu 显示期间可以继续推进
+menu (async, handle=m) as answer:
+    "选项A" -> "a"
+    "选项B" -> "b"
+
+# menu 已经显示，执行流继续往下走
+autumn: "你还在想吗？"
+sophia: "慢慢来，不急。"
+wait for m      # 在这里等待玩家做出选择，选择结果写入 answer
+autumn: "你选了 {answer}。"
+
+# async menu 规则：
+# - (async) 只能配合 as 接返回值，纯跳转型 menu 不支持 (async)
+#   async 跳转型 menu（无 as）时解析期报错：
+#   AxnParseError: 'menu (async)' requires 'as result' to capture the selection.
+#     Jump-style 'menu' cannot be used with '(async)'.
+#     → scene.apy, line 8
+# - wait for m 等待期间，interactive track 输入路由正常工作，对话行可正常推进
+# - 玩家未选择时执行流到达 wait for m 以外的其他 wait for 不受影响
+# - timeout 与 async 可以共用：menu (async, timeout=10.0, default="a", handle=m) as answer
+# - GUI 处理：async menu 节点显示"非阻塞"标记，wait for 节点显示关联句柄名
+
 # with char：连续对话锁定角色和默认修饰符
 # 块内裸字符串自动归属当前角色；行级修饰符按槽位覆盖块级默认值（表情槽、具名参数槽、Flag 槽各自独立）
 with autumn (happy):
@@ -2220,6 +2244,7 @@ AxnWarning: [expoint] 'after_prologue' is defined in multiple files.
 | `input disable` / `input enable` | 脚本区输入控制节点；块语法对应包裹节点，对称写法对应独立节点 |
 | `modal show/hide` | 脚本区模态框节点；`as result` 显示返回值变量名 |
 | `menu as` 返回值 | 脚本区独立"菜单返回值"节点，与跳转型菜单节点分开；`->` 右侧显示返回值表达式字段 |
+| `menu (async)` | 脚本区菜单节点显示"非阻塞"标记；`handle=` 字段显示句柄名；对应的 `wait for` 节点显示关联句柄名 |
 | `define extends` 角色继承 | 角色定义积木块显示继承关系；子角色字段列表中继承字段以灰色标注来源；链式继承超过两层时节点显示黄色警告标记，字段来源标注完整展开路径 |
 | `define image`（静态别名） | 资源管理面板独立区域，与角色列表分开展示；显示文件路径和资源预览 |
 | `define image`（分层） | 图片对象积木块，`layers`/`states`/`expressions`/`triggers` 编辑器与角色定义完全一致；符号表中以"图片对象"类型区分于角色 |
@@ -2418,6 +2443,7 @@ Hint: Use 'show autumn (duration=0.3)' to make intent explicit.
 | `on enter` | label 名 | — |
 | `on key` | 键名字符串 | — |
 | `menu as` | — | — （选项内 `->` 右侧为返回值表达式） |
+| `menu as (async)` | — | `async` `handle` `timeout` `default` （`async` 只能配合 `as` 使用） |
 | `jump if/unless` | 目标 label | 条件表达式（行末 `if`/`unless` 后） |
 | `call if/unless` | label 调用 | 条件表达式（行末 `if`/`unless` 后） |
 | `return if/unless` | — | 条件表达式（行末 `if`/`unless` 后） |
@@ -2788,6 +2814,8 @@ AxnParseError: Mixed z_order in 'layers' for 'autumn'.
 **`expression` 指令**：无对话时切换表情的专用指令，`show` 不承担此职责。`states` 模型下 `expression autumn happy` 整图切换；`layers` 模型下走 `expressions` 映射。`layers` 模型支持直接指定各层（`expression autumn (face=happy, brow=angry)`）绕过映射，也支持换装（`expression autumn (outfit=casual)`）。可选 `transition` 具名参数控制过渡效果。两套模型下用户侧语法完全一致，差异由引擎内部按角色声明类型分派。
 
 **`menu as` 返回值**：`menu as result` 选完后继续当前执行流，选项 `->` 右侧为返回值表达式而非 label 名。`menu as` 内不允许 `jump`，混用时解析器报错。需要前置逻辑时用展开块 + 显式 `->` 返回。GUI 对应独立的"菜单返回值"节点，与跳转型菜单节点分开，不混用。
+
+**`menu (async)` 非阻塞菜单**：`menu` 默认阻塞执行流，等玩家选择后才推进。`(async)` 参数让 menu 显示后执行流立即继续，选择结果通过 `wait for handle` 在需要时等待。`(async)` 只能配合 `as result` 使用，纯跳转型 `menu` 不支持 `(async)`，混用时解析期报错。`wait for` 等待期间 interactive track 输入路由正常工作，对话行可正常推进——这是 menu 与对话并发显示的标准写法，不需要 `parallel` 块。
 
 **`define extends` 角色继承**：子角色继承父角色所有字段，显式声明的字段覆盖父定义。`layers` 模型下同名动态层内按 key 合并，未声明状态继承父定义。支持链式继承（A extends B extends C），但引擎启动时输出警告，可 ignore；字段展开顺序为从根到叶，子类覆盖父类。建议保持单层继承以维持可读性——链式超过两层后，字段来源在代码审查时难以追踪，GUI 编辑器对超过两层的链式继承在角色定义节点上显示黄色警告标记，并在字段列表中标注完整展开路径。`define char` 与 `define image` 之间不允许跨类型继承，解析期报错。继承只发生在编译期展开，运行时两个角色是完全独立的显示对象。
 
@@ -8888,6 +8916,47 @@ engine:
 
 **行尾禁则字符（不能出现在行尾）：** `（「『【〈《`
 
+---
+
+### 标点自动断句（Punctuation Pause）
+
+打字机效果中，遇到标点符号时自动插入停顿，无需脚本层手动标注 `<w=N>`。这是 `TextRenderer` 的内置行为，在 `options_window.apy` 中配置：
+
+```apy
+# options_window.apy
+engine:
+    text:
+        punctuation_pause:
+            "。": 0.3      # 句号后停顿 0.3 秒后继续打字
+            "！": 0.4
+            "？": 0.4
+            "，": 0.1
+            "、": 0.05
+            "……": 0.5
+            "—": 0.2
+            ".":  0.15     # 英文句号
+            "!":  0.3
+            "?":  0.3
+            ",":  0.08
+        punctuation_pause_mode = "auto"    # auto / manual / none
+```
+
+`punctuation_pause_mode` 说明：
+
+| 值 | 行为 |
+|----|------|
+| `auto`（默认） | TextRenderer 扫描文本，遇到配置的标点自动插入停顿效果，等价于在该位置插入 `<w=N>` |
+| `manual` | 只响应脚本里显式写的 `<w=N>`，不自动处理标点 |
+| `none` | 关闭所有中途停顿，包括手动 `<w>` 以外的自动处理 |
+
+**停顿行为与 `<w>` 语义完全一致**：自动停顿是 TextRenderer 内部在渲染前将标点后的文本分段处理，不产生新的回滚检查点，整行对话仍作为一个回滚单元。
+
+**跳过模式下的停顿**：Skip 模式下自动停顿被跳过，与 `<w>` 的 Skip 行为一致。
+
+**行级 `speed=` 修饰符与停顿的交互**：停顿时间不受 `speed=` 影响——`speed=` 只控制字符显示的速度，不缩放停顿时长。如需在快速模式下同步缩短停顿，需要通过插件的 `text_preprocess` 管道实现。
+
+---
+
 **字体回退链（字符级）：** 回退粒度为**单个字符**——某个字符在当前字体找不到字形时，才切换到 fallback 字体，而不是按整个文本文件回退。这保证了中英混排的正确显示：
 
 ```apy
@@ -11887,9 +11956,9 @@ def _serialize_models(): ...
 def _reload_all_models(data): ...
 ```
 
-### 五种扩展能力
+### 六种扩展能力
 
-插件能做的事情分五个正交维度，边界清晰，互不重叠：
+插件能做的事情分六个正交维度，边界清晰，互不重叠。通过这六种能力的组合，在不修改引擎代码的前提下，插件可以干预引擎运行时几乎所有可以被介入的点：
 
 | 能力 | 声明方法 | 实现绑定 | 说明 |
 |------|---------|---------|------|
@@ -11897,17 +11966,207 @@ def _reload_all_models(data): ...
 | 现有动词的新子命令 | `declare_subcommand()` | `@plugin.subcommand()` | 如 `camera dolly` |
 | 现有指令的新具名参数 | `declare_extend()` | `@plugin.extend()` | 如 `show (l2d_motion=...)` |
 | 私有状态命名空间 | `declare_namespace()` | `plugin.ns.*` | 不污染 store |
-| 引擎生命周期 Hook | `declare_hook()` | `@plugin.hook()` | 拦截或观察引擎事件 |
+| 引擎 Hook | `declare_hook()` | `@plugin.hook()` | 六种介入能力，见下节 |
+| 生命周期任务 | `declare_lifecycle()` | `@plugin.lifecycle()` | 持续运行的后台逻辑 |
+| 数据管道变换 | `declare_pipeline()` | `@plugin.pipeline()` | 改变数据在子系统间的流向 |
 
-**三种扩展层级不可混用**：给 `camera` 注册新子命令用 `declare_subcommand`；给 `show` 增加新具名参数用 `declare_extend`；完全不相关的新功能用 `declare_verb`。混用时引擎启动报 `AxnPluginError`。
+**三种指令扩展层级不可混用**：给 `camera` 注册新子命令用 `declare_subcommand`；给 `show` 增加新具名参数用 `declare_extend`；完全不相关的新功能用 `declare_verb`。混用时引擎启动报 `AxnPluginError`。
 
-### Hook 优先级与组合语义
+---
 
-Hook 是**有序管道**，不是简单的事件通知。同一 hook 点上注册了多个处理函数时，按优先级从小到大依次串联执行：
+### Hook 六种介入能力
+
+Hook 是**有序管道**，不是简单的事件通知。同一 hook 点上注册了多个处理函数时，按优先级从小到大依次串联执行。Hook 的介入能力分六种，每种在 `declare_hook` 时通过 `capability` 参数声明：
 
 ```python
-plugin.declare_hook("before_show", priority=10)   # 数字越小越先执行，默认 50
+plugin.declare_hook("before_show", capability="intercept", priority=10)
 ```
+
+#### 1. 观察型（observe）
+
+只读，不影响执行流。适合日志、统计、分析类插件。
+
+```python
+plugin.declare_hook("after_dialogue", capability="observe", priority=50)
+
+@plugin.hook("after_dialogue")
+def on_after_dialogue(event):
+    analytics.record(event.char, event.text)
+    # 不需要返回值，引擎忽略观察型 hook 的返回值
+```
+
+#### 2. 拦截型（intercept）
+
+可以修改指令参数，可以取消执行。返回修改后的 event 继续执行，返回 `False` 取消该指令的默认执行。
+
+```python
+plugin.declare_hook("before_show", capability="intercept", priority=10)
+
+@plugin.hook("before_show")
+def on_before_show(event):
+    if event.char == "autumn" and store["special_mode"]:
+        event.position = "center"    # 修改参数
+        return event                 # 引擎用新参数执行
+    return event
+
+# 返回 False 取消执行
+@plugin.hook("before_show", priority=5)
+def gate_show(event):
+    if not store["scene_ready"]:
+        return False    # 取消本次 show，后续 hook 不再执行
+    return event
+```
+
+#### 3. 注入型（inject）
+
+在执行流里插入新的引擎指令。返回 `list[Instruction]` 时，引擎在当前位置执行这批注入指令后再继续原有执行流。注入的指令走完整的引擎路径，存档、回滚、round-trip 全部一致。
+
+```python
+plugin.declare_hook("after_dialogue", capability="inject", priority=50)
+
+@plugin.hook("after_dialogue")
+def on_after_dialogue(event):
+    emotion = analyze_emotion(event.text)
+    if emotion != event.char.current_expression:
+        return [
+            Instruction(OpCode.EXPRESSION_CMD, {
+                "char":       event.char.name,
+                "expression": emotion,
+                "transition": "dissolve"
+            }, line=event.line)
+        ]
+    return event    # 不注入时返回 event
+```
+
+#### 4. 覆盖型（override）
+
+完全接管某个指令的执行，引擎不再执行任何默认逻辑。适合 Live2D、骨骼动画等需要替换整个显示管线的插件。
+
+覆盖型必须声明接管范围，并说明是否自己负责维护显示状态：
+
+```python
+plugin.declare_hook("show",
+    capability    = "override",
+    scope         = "char",
+    scope_filter  = lambda event: event.char in live2d_chars,
+    owns_state    = True,    # 插件自己负责序列化此角色的显示状态，引擎不再追踪
+)
+
+@plugin.hook("show")
+def handle_live2d_show(event):
+    _show_live2d_model(event.char, event.position)
+    # 引擎完全不执行 show 的默认逻辑
+```
+
+`owns_state=True` 时引擎不再把此角色写入 `display_snapshot`，插件须通过 `before_save` Hook 自己序列化。
+
+#### 5. 生命周期型（lifecycle）
+
+在某个阶段持续运行，不是单次触发。通过 `declare_lifecycle` 单独声明，不走 `declare_hook`：
+
+```python
+plugin.declare_lifecycle("per_frame", cost="low")
+plugin.declare_lifecycle("per_label", scope="battle_scene")
+plugin.declare_lifecycle("per_dialogue")
+plugin.declare_lifecycle("while_waiting")
+
+@plugin.lifecycle("per_frame")
+def physics_tick(dt: float, context: FrameContext):
+    physics_world.step(dt)
+    for body in physics_world.bodies:
+        context.emit_commands.append(
+            UICommand("set_position", body.sprite_id, body.position)
+        )
+
+@plugin.lifecycle("per_label", scope="battle_scene")
+def battle_ai_tick(dt: float, context: LabelContext):
+    # 只在 battle_scene label 执行期间运行，label 退出时自动停止
+    enemy_ai.update(dt, context.store)
+```
+
+生命周期类型：
+
+| 类型 | 触发条件 | 停止条件 |
+|------|---------|---------|
+| `per_frame` | 每帧 | 插件卸载 |
+| `per_label` | 指定 label 进入时 | label 退出时 |
+| `per_scene` | scene 切换时 | 下次 scene 切换 |
+| `per_dialogue` | 对话行开始时 | 对话行结束时 |
+| `while_waiting` | 等待点开始时 | 等待点结束时 |
+
+`per_frame` 需要声明开销等级，`cost="high"` 时引擎在 debug 模式输出性能警告：
+
+```python
+plugin.declare_lifecycle("per_frame", cost="low")    # low / medium / high
+```
+
+**生命周期任务与存档的交互**：生命周期任务不参与存档，不保存运行进度。读档后引擎根据当前 label 重新启动对应的生命周期任务，从头开始，与 `repeat forever` 后台 transform 的处理方式一致。
+
+#### 6. 管道变换型（pipeline）
+
+改变数据在子系统之间传递的方式。作用于引擎内部的数据流节点，不是单次事件触发。通过 `declare_pipeline` 单独声明：
+
+```python
+# 文本管道：TextRenderer 处理前变换文本
+plugin.declare_pipeline("text_preprocess")
+
+@plugin.pipeline("text_preprocess")
+def scramble_transform(text: str, context: TextContext) -> str:
+    if context.char == "mysterious_voice":
+        return apply_cipher(text)
+    return text
+
+# 音频管道：在 DSP 链里插入分析节点
+plugin.declare_pipeline("audio_dsp", channel="voice")
+
+@plugin.pipeline("audio_dsp")
+def lipsync_analyzer(samples, context: AudioContext):
+    amplitude = abs(samples).mean()
+    context.shared["mouth_open"] = amplitude > 0.1
+    return samples    # 不修改音频，只分析
+
+# 存档管道：序列化时变换数据结构
+plugin.declare_pipeline("save_transform")
+plugin.declare_pipeline("load_transform")
+
+@plugin.pipeline("save_transform")
+def encrypt_save(data: dict, context: SaveContext) -> dict:
+    data["_encrypted"] = encrypt(data.pop("store"))
+    return data
+
+@plugin.pipeline("load_transform")
+def decrypt_save(data: dict, context: SaveContext) -> dict:
+    data["store"] = decrypt(data.pop("_encrypted"))
+    return data
+
+# AST 管道：编译前变换 AST 节点（见下文危险级警告）
+plugin.declare_pipeline("ast_transform")
+
+@plugin.pipeline("ast_transform")
+def expand_macro(node: ASTNode, context: ASTContext):
+    if isinstance(node, MyMacroNode):
+        return expand_to_standard_nodes(node)    # 展开为标准 AST 节点
+    return node
+```
+
+---
+
+### Hook 能力完整对照表
+
+| 能力 | 时机 | 能否取消 | 能否修改 | 持续性 | 声明方式 |
+|------|------|---------|---------|--------|---------|
+| 观察型 | 事件点 | ❌ | ❌ | 单次 | `declare_hook(capability="observe")` |
+| 拦截型 | 事件点 | ✅ | ✅（参数） | 单次 | `declare_hook(capability="intercept")` |
+| 注入型 | 事件点 | — | — | 单次，插入新操作 | `declare_hook(capability="inject")` |
+| 覆盖型 | 事件点 | — | — | 完全接管 | `declare_hook(capability="override")` |
+| 生命周期型 | 阶段区间 | — | — | 持续 | `declare_lifecycle()` |
+| 管道变换型 | 数据流节点 | ✅ | ✅（数据） | 每次数据流过 | `declare_pipeline()` |
+
+---
+
+### Hook 优先级与管道语义
+
+同一 hook 点上注册了多个处理函数时，按优先级从小到大依次串联执行（数字越小越先执行，默认 50）：
 
 **管道规则：**
 
@@ -11915,21 +12174,7 @@ plugin.declare_hook("before_show", priority=10)   # 数字越小越先执行，�
 - 返回修改后的 event：继续传递给下一个处理函数
 - 返回 `False`：中断管道，后续处理函数不再执行，引擎跳过该指令的默认执行
 - 返回原始 event 不修改：透传，适合只观察不干预的场景
-
-```python
-@plugin.hook("before_show", priority=10)
-def on_before_show(event):
-    if event.char == "autumn" and store["special_mode"]:
-        _show_special_version(event.char, event.position)
-        return False    # 取消默认 show，后续 hook 不再执行
-    return event        # 正常传递
-
-@plugin.hook("before_show", priority=20)
-def another_before_show(event):
-    # priority=10 的 hook 返回 False 时，此函数不会被调用
-    log_show_event(event)
-    return event
-```
+- 返回 `list[Instruction]`（注入型）：引擎执行注入指令后继续
 
 优先级冲突（两个插件声明相同 priority）时，引擎启动输出警告，按文件名字典序决定顺序：
 
@@ -11938,6 +12183,8 @@ AxnWarning: [plugin] Hook 'before_show' priority conflict: 'live2d' and 'lipsync
   Falling back to filename order: live2d.py before lipsync.py.
   Set different priorities to make order explicit.
 ```
+
+**Hook 异常隔离**：某个插件的 Hook 处理函数抛出异常时，异常只隔离到当前插件，不影响管道上其他插件的 Hook 处理函数。出错的插件那一环被跳过，管道继续往下走，同时输出 `AxnWarning`。一个写得烂的插件不会把整个 Hook 链打断。
 
 ---
 
@@ -11955,6 +12202,134 @@ def on_show_with_l2d(event):
 ```
 
 未带声明参数的 `show` 指令不触发此 hook，不产生额外开销。
+
+---
+
+### Hook 硬边界
+
+**唯一真正不开放的是：VM 指令执行的原子性中间状态。**
+
+VM 在执行单条指令期间（如 `WITH_STORE` 的原子块执行到一半，快照已做但赋值未完成），不允许任何 Hook 介入执行的中途状态。这个中间状态在外部视角本来就不应该存在，介入没有意义，且会直接破坏存档一致性。这不是"危险但可以 ignore"，是物理上没有意义的操作，不开放，无例外。
+
+其他所有子系统——Parser 符号表、错误处理路径、热重载内部、任何引擎层——均可通过插件干预，配合对应的危险级警告机制（见下节）。
+
+---
+
+### AST 管道变换与危险级插件
+
+**AST 管道变换**（`declare_pipeline("ast_transform")`）是插件系统中能力最强、风险最高的扩展点。它在引擎启动的三遍扫描阶段运行，不是运行时，可以引入新语法、展开宏、修改节点结构。
+
+同类高风险操作还包括：直接干预 **Parser 符号表**、覆盖**引擎错误处理路径**、介入**热重载系统内部**。这类操作统称**危险级操作**，需要在插件中显式声明。
+
+#### 危险级声明
+
+在插件的 `Plugin()` 构造中声明所用到的危险级能力：
+
+```python
+plugin = Plugin(
+    "my_advanced_plugin",
+    version    = "1.0.0",
+    dangerous  = [
+        "ast_transform",        # AST 管道变换
+        "parser_symbol_table",  # 直接修改 Parser 符号表
+        "error_handler",        # 覆盖引擎错误处理路径
+        "hot_reload_internal",  # 介入热重载系统内部
+    ]
+)
+```
+
+#### 启动时全屏警告
+
+引擎检测到含危险级声明的插件时，在进入游戏前**全屏显示警告界面**，不可跳过，5 秒后才出现 Proceed 按钮：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                   │
+│   ⚠  DANGEROUS PLUGIN DETECTED                                   │
+│                                                                   │
+│   Plugin 'my_advanced_plugin' v1.0.0 declares access to:         │
+│     • AST pipeline transform  (affects compilation)              │
+│     • Parser symbol table     (affects compilation)              │
+│                                                                   │
+│   This bypasses core engine safety guarantees.                   │
+│   Consequences:                                                   │
+│     - Round-trip fidelity is NOT guaranteed                      │
+│     - Save compatibility is NOT guaranteed                        │
+│     - Engine error reporting may be unreliable                   │
+│                                                                   │
+│   Only proceed if you wrote this plugin yourself                  │
+│   and fully understand the implications.                          │
+│                                                                   │
+│                                           [EXIT]                  │
+│                                                                   │
+│                          （5 秒后出现）  [I understand, proceed] │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+倒计时数字可见，强化"这不是卡顿，是故意的"信号。
+
+#### 持久化 ignore
+
+点击 Proceed 后，引擎将此选择写入本地持久化记录，之后启动不再显示全屏警告。持久化 ignore 后，在其他位置保留**低打扰的持续提示**：
+
+- `axn doctor` 输出里始终列出危险级插件，标红
+- 编辑器状态栏常驻小图标，hover 显示"项目包含危险级插件"
+
+不允许"永久静默"——图标始终存在，让开发者始终知道风险在那里。
+
+#### AST 变换的边界与合法性检测
+
+AST 变换完成后，引擎在第三遍扫描之后做一次**快速合法性扫描**，检查变换结果是否超出安全边界：
+
+| 越界类型 | 等级 | 说明 |
+|---------|------|------|
+| 引入非标准 AST 节点（有 `gui_schema`） | `W1` | 编辑器降级为代码节点，可 ignore |
+| 引入非标准 AST 节点（无 `gui_schema`） | `W2` | 编辑器降级为代码节点，可 ignore |
+| 修改结构性字段（label 名、跳转目标） | `W3` | 影响存档和符号表，强烈建议不要 ignore |
+| 删除节点 | `W4` | 影响执行流完整性，强烈建议不要 ignore |
+| 直接修改 Parser 符号表（绕过 `declare_*`） | `E` | 直接报错，不允许 ignore |
+
+越界时给出具体的功能降级列表而不是泛泛的警告：
+
+```
+AxnWarning: [ast_transform] Plugin 'my_plugin' introduced non-standard AST node 'MyCustomNode'.
+  This node cannot be round-tripped by the standard Parser.
+
+  Consequences you accept by ignoring this warning:
+    1. Axn-Editor will display this node as a code block (not a visual node)
+    2. 'axn fmt' will not format content inside this node
+    3. If this plugin is removed, the .apy file may not parse correctly
+    4. Hot-reload may not work correctly for files containing this node
+
+  To suppress: add 'ignore_ast_warnings = ["my_plugin"]' in options_window.apy
+  To suppress permanently: add 'ignore_ast_warnings_permanent = ["my_plugin"]'
+```
+
+`ignore_ast_warnings_permanent` 的语义是：连"你可以永久忽略"这句话本身都不再显示。
+
+```apy
+# options_window.apy
+engine:
+    ast_transform:
+        ignore_warnings:
+            my_plugin: ["W1", "W2"]    # 忽略指定等级
+            another_plugin: "all"
+        ignore_permanent:
+            - "my_plugin"              # 永久静默，不再提示
+```
+
+编辑器打开含越界变换结果的文件时，在文件级别显示横幅提示，不阻止编辑：
+
+```
+⚠ 此文件包含由插件 'my_plugin' 生成的非标准节点。
+  部分节点以代码块显示，无法可视化编辑。
+  移除插件后此文件可能无法正确解析。
+  [查看详情]
+```
+
+#### `axn build` 行为
+
+含危险级插件的项目只要能正常运行就允许构建，`axn build` 不拦截。构建日志里留一条记录注明包含了危险级插件，方便事后排查问题。
 
 ---
 
@@ -11990,46 +12365,108 @@ AxnPluginError: Plugin 'lipsync' requires 'live2d' but it is not loaded.
 
 ### 引擎层 Hook 点完整列表
 
+按子系统分类，标注每个 Hook 点支持的最高能力等级（低等级能力均可用）：
+
+**显示控制层**
+
 ```python
-engine.hook.on("before_show",        handler)   # show 指令执行前
-engine.hook.on("after_show",         handler)   # show 指令执行后
-engine.hook.on("before_hide",        handler)   # hide 指令执行前
-engine.hook.on("before_dialogue",    handler)   # 每条对话行渲染前
-engine.hook.on("after_dialogue",     handler)   # 每条对话行完成后
-engine.hook.on("before_scene_change",handler)   # scene 指令执行前
-engine.hook.on("after_scene_change", handler)   # scene 指令执行后
-engine.hook.on("before_save",        handler)   # 存档写入前
-engine.hook.on("after_save",         handler)   # 存档写入后
-engine.hook.on("after_load",         handler)   # 读档完成后
-engine.hook.on("label_enter",        handler)   # 任意 label 进入时
-engine.hook.on("label_exit",         handler)   # 任意 label 退出时
-engine.hook.on("store_write",        handler)   # store 任意 key 被写入时
-engine.hook.on("tick",               handler)   # 每帧（慎用，高频）
-engine.hook.on("menu_open",          handler)   # menu 显示时
-engine.hook.on("menu_close",         handler)   # menu 关闭时（含超时）
-engine.hook.on("checkpoint",         handler)   # checkpoint 指令执行时
+engine.hook.on("before_show",         handler)   # show 指令执行前（支持：intercept/override）
+engine.hook.on("after_show",          handler)   # show 指令执行后（支持：observe/inject）
+engine.hook.on("before_hide",         handler)   # hide 指令执行前（支持：intercept）
+engine.hook.on("after_hide",          handler)   # hide 指令执行后（支持：observe/inject）
+engine.hook.on("before_scene_change", handler)   # scene 指令执行前（支持：intercept）
+engine.hook.on("after_scene_change",  handler)   # scene 指令执行后（支持：observe/inject）
+engine.hook.on("before_expression",   handler)   # expression 指令执行前（支持：intercept/override）
 ```
 
-**脚本层 Hook（`on enter`/`on key`/`on signal`/`watch`）与引擎层 Hook 的区别：**
+**对话与文本层**
+
+```python
+engine.hook.on("before_dialogue",     handler)   # 每条对话行渲染前（支持：intercept/inject）
+engine.hook.on("after_dialogue",      handler)   # 每条对话行完成后（支持：observe/inject）
+engine.hook.on("before_wait_click",   handler)   # 对话行打完字等待点击前（支持：intercept）
+```
+
+**菜单层**
+
+```python
+engine.hook.on("before_menu",         handler)   # menu 显示前（支持：intercept，event.options 可修改）
+engine.hook.on("menu_open",           handler)   # menu 显示时（支持：observe）
+engine.hook.on("menu_select",         handler)   # 玩家选择后（支持：intercept，可修改选择结果）
+engine.hook.on("menu_close",          handler)   # menu 关闭时含超时（支持：observe）
+```
+
+**VM 执行层**
+
+```python
+engine.hook.on("instruction_before",  handler)   # 任意指令执行前（支持：intercept）
+engine.hook.on("instruction_after",   handler)   # 任意指令执行后（支持：observe/inject）
+# event.opcode, event.operand, event.label, event.line
+```
+
+**Store 层**
+
+```python
+engine.hook.on("store_write",         handler)   # store 任意 key 被写入时（支持：intercept，可修改写入值或阻止写入）
+# event.key, event.old_value, event.new_value
+```
+
+**Scheduler 层**
+
+```python
+engine.hook.on("track_start",         handler)   # parallel track 开始（支持：observe）
+engine.hook.on("track_end",           handler)   # parallel track 结束（支持：observe/inject）
+engine.hook.on("wait_begin",          handler)   # 任何等待状态开始（支持：observe）
+engine.hook.on("wait_end",            handler)   # 等待状态结束（支持：observe/inject）
+# event.wait_kind = "click" | "duration" | "animation" | "parallel"
+```
+
+**存档层**
+
+```python
+engine.hook.on("save_serialize",      handler)   # 存档序列化（支持：pipeline，可追加插件数据）
+engine.hook.on("save_deserialize",    handler)   # 读档反序列化（支持：pipeline，可读取插件数据）
+engine.hook.on("before_save",         handler)   # 存档写入前（支持：intercept）
+engine.hook.on("after_save",          handler)   # 存档写入后（支持：observe）
+engine.hook.on("after_load",          handler)   # 读档完成后（支持：observe/inject）
+engine.hook.on("checkpoint",          handler)   # checkpoint 指令执行时（支持：observe）
+```
+
+**Label 层**
+
+```python
+engine.hook.on("label_enter",         handler)   # 任意 label 进入时（支持：observe/inject）
+engine.hook.on("label_exit",          handler)   # 任意 label 退出时（支持：observe/inject）
+```
+
+**渲染层**
+
+```python
+engine.hook.on("frame_begin",         handler)   # 每帧开始（支持：observe，慎用，高频）
+engine.hook.on("frame_end",           handler)   # 每帧结束，surface 提交前（支持：pipeline）
+# Pygame 后端下 event.surface 可直接绘制，用于后期处理效果
+```
+
+**管道变换点**
+
+```python
+# 以下通过 declare_pipeline 声明，不走 declare_hook
+# "text_preprocess"    文本进入 TextRenderer 前
+# "audio_dsp"          音频 DSP 链节点
+# "save_transform"     存档序列化时
+# "load_transform"     读档反序列化时
+# "ast_transform"      AST 编译前（危险级，见下文）
+```
+
+**脚本层 Hook 与引擎层 Hook 的区别：**
 
 | | 脚本层 Hook | 引擎层 Hook |
 |--|------------|------------|
 | 注册位置 | `.apy` 文件顶层 | Python，`startup (before):` 阶段 |
 | 作用范围 | 指定 label 或按键 | 全局 |
-| 返回值语义 | 无 | 可返回修改后的 event（拦截型） |
-| 能否取消事件 | 不能 | 能（返回 `False`） |
+| 返回值语义 | 无 | 依能力类型：修改 event / False / list[Instruction] |
+| 能否取消事件 | 不能 | 能（拦截型返回 `False`） |
 | 适用场景 | 游戏逻辑 | 插件基础设施 |
-
-拦截型 Hook 返回 `False` 时，引擎跳过该指令的默认执行，由插件完全接管：
-
-```python
-@plugin.hook("before_show")
-def on_before_show(event):
-    if event.char == "autumn" and store["special_mode"]:
-        _show_special_version(event.char, event.position)
-        return False    # 取消默认 show 执行
-    return event        # 正常执行
-```
 
 ### 命名空间（Namespace）
 
@@ -12454,8 +12891,16 @@ start label
 | `declare_verb` 注册的新指令 | 若插件提供 `gui_schema`，渲染为专用积木块；否则降级为代码节点，归属关系保留 |
 | `declare_subcommand` 注册的子命令 | 同上 |
 | `declare_extend` 注册的新参数 | 在原指令积木块上显示额外参数字段，标注来源插件名 |
-| `declare_namespace` 命名空间 | 变量面板独立分组，标注"插件命名空间：{plugin_name}" |
-| `declare_hook` | 编辑器插件面板列出已注册 Hook，标注触发时机 |
+| `declare_namespace` 命名空间（`public=True`） | 变量面板独立分组，标注"插件命名空间：{plugin_name}" |
+| `declare_namespace`（`public=False`） | 变量面板不显示，标注"插件私有，不可从脚本访问" |
+| `declare_hook`（观察/拦截/注入型） | 编辑器插件面板列出已注册 Hook，标注触发时机和能力等级 |
+| `declare_hook`（覆盖型） | 插件面板标注"完全接管"，并标注 `scope_filter` 和 `owns_state` 配置 |
+| `declare_lifecycle` | 插件面板列出生命周期任务，标注类型（per_frame / per_label 等）和 cost 等级 |
+| `declare_pipeline`（非 ast_transform） | 插件面板列出管道变换点，标注作用的数据流节点 |
+| `declare_pipeline("ast_transform")` | 插件面板以红色警告标注"危险级：AST 管道变换"；文件级横幅提示非标准节点 |
+| 危险级插件（含 `dangerous=[...]` 声明） | 编辑器状态栏常驻警告图标；插件面板以红色高亮标注危险级能力列表 |
+| AST 变换引入的非标准节点（W1/W2） | 降级为代码节点；节点上显示来源插件名和警告等级；编辑器可正常编辑代码内容 |
+| AST 变换修改结构性字段（W3/W4） | 受影响节点以橙色警告标注；提示"此节点结构已被插件修改，存档兼容性不保证" |
 
 ---
 
@@ -13013,6 +13458,11 @@ post_script = "scripts/post_build.py"
 - `/main/axn/` 目录下存在无 `__axn_plugin__` 标记的 `.py` 文件（提示确认是否为遗漏）
 - `project.toml` 中声明了插件但 `/main/axn/` 里缺失（提示运行 `axn plugin sync`）
 - 插件的 `__pip_requires__` 中声明的包未安装（提示 pip install）
+- `menu (async)` 未配合 `as result` 使用（解析期已报错，lint 补充提示改用 `menu as (async, handle=...)`）
+- 插件使用了危险级能力但未在 `Plugin()` 的 `dangerous=[]` 中声明（可能是遗漏声明）
+- `declare_hook(capability="override", owns_state=True)` 的插件未实现 `before_save` Hook（标注"声明接管显示状态但未序列化，读档后可能丢失"）
+- `declare_lifecycle("per_frame", cost="high")` 存在但项目没有明确需要高频任务的场景（提示考虑降频）
+- `declare_pipeline("ast_transform")` 使用但未在 `Plugin()` 的 `dangerous=[]` 中声明 `"ast_transform"`
 
 ### Round-Trip Fidelity 补充（工具链与平台）
 
